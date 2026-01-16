@@ -1,0 +1,1100 @@
+---
+title: "CeRNA-MiRNA_revision_dataset"
+author: "Asa Budnick"
+date: "2025-12-18"
+output: html_document
+---
+
+---
+title: "CERNA-MiRNA_Network_Analysis"
+author: "Asa Budnick"
+date: "2024-12-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+#BiocManager::install("ballgown")
+
+library(ballgown)
+library(ggplot2)
+library(genefilter)
+library(GenomicRanges)
+library(plyr)
+library(dplyr)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(ggiraph)
+
+Google_Drive_prefix<-"/Users/asabudnick/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu"
+
+```
+
+GOALS: 
+1. Identify potential circRNA-miRNA-mRNA networks
+  1. import data: 
+    -circRNAs
+    -circRNA-miRNA targets
+    -linear transcripts (CDS? all transcript sequences?)
+          -cds (for now)
+2. Analyze networks 
+  - go terms
+      -csp
+      -lignin
+      -other key GO terms
+  -specific miRNAs
+    2111 - potentially interesting
+    
+3. Other
+  see which circRNAs are most correlated (circFPBM) with GENE FPKMs
+    - examine if there are miRNA connections
+  Take a loving look at ccr4
+    (DEG and circexp across treatments)
+      -boring in rhizvsln
+      
+  Take a look at circRNA with distinct to offset
+
+    
+
+```{r Import circRNAs and circ-miRNA_psRNA_targets}
+annotated_full_clustered_circs<-readxl::read_xlsx(path=sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/annotated_Full_clustered_metadata_circRNAs.xlsx",Google_Drive_prefix)
+)
+
+circ_MRE_psRNA<-suppressWarnings(read.csv(file = "Lja-circ-MRE-psRNATargetv2_results.txt",header = T,sep="\t",skip = 1))
+
+```
+
+```{r import DEGs and CDS-miRNA psRNA trargets}
+DEGs<-read.csv(file=sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Combined_DEG_comaprisons.csv",Google_Drive_prefix),header=T)
+
+cds_RME_psRNA<-read.csv(file = "240106_psRNATargetJob_lj_CDS.txt",header = T,sep="\t",skip = 1)
+```
+
+```{r format  circ-MRE table}
+Full_miRNA_results<-unique(circ_MRE_psRNA)
+#not too many duplicates only 6 out of 16K, which is a good thing . . . 
+
+
+Full_miRNA_results$Target_Desc.<-gsub(x = Full_miRNA_results$Target_Desc., pattern = "^length", replacement = "ORIG length")
+Full_miRNA_results<-tidyr::separate(data = Full_miRNA_results, col = "Target_Desc.", into = c("OFFSET","Length","ISOFORM Expression"),sep = " " )
+Full_miRNA_results<-tidyr::separate(data = Full_miRNA_results, col = "Target_Acc.", into=c("Image_ID","circRNA_ID"),sep = "#")
+
+#find any hits that are distinct to the offset or to the orig
+Full_Distinct_hits<- Full_miRNA_results %>% 
+  group_by(miRNA_Acc., circRNA_ID) %>% 
+  filter(n_distinct(OFFSET)==1)
+
+#find hits only in offsets
+Full_Distinct_offset<-Full_Distinct_hits %>% 
+  filter(OFFSET=="OFFSET")
+Full_Distinct_offset$Distinct_to_Offset<-"Yes"
+
+#colnames(Full_Distinct_offset)
+#find hits that are in offset but not in original
+Full_miRNA_results<-merge(x=Full_miRNA_results, y=Full_Distinct_offset, by.x=colnames(Full_miRNA_results),by.y=colnames(Full_Distinct_offset)[-18], all.x=T)
+Full_miRNA_results$Distinct_to_Offset[is.na(Full_miRNA_results$Distinct_to_Offset)]<-"No"
+
+Full_miRNA_results_dedup<-Full_miRNA_results %>% filter((OFFSET=="ORIG"&Distinct_to_Offset=="No")|(OFFSET=="OFFFSET"&Distinct_to_Offset=="Yes"))
+
+```
+
+```{r include=FALSE}
+#Combine miRNA-circRNA dataframe
+#Clean up MRE circRNA IDs
+Full_miRNA_results$circRNA_ID<- gsub(x=Full_miRNA_results$circRNA_ID,pattern="\\|",replacement="-")
+
+
+annotated_full_clustered_circs_miRNA_added<-merge(x=annotated_full_clustered_circs,y=Full_miRNA_results,by=c("Image_ID","circRNA_ID"),all.x=T,all.y=F)
+
+#Lets try to make this a little nicer; collapsing the information from the same circRNA observation (same ID and Sample, found by different analysis software)
+annotated_full_clustered_circs_miRNA_added_Collapsed<-annotated_full_clustered_circs_miRNA_added %>% 
+  group_by(New_circ_ID,sample_prefix) %>% 
+  mutate(Analysis=paste(sort(unique(Analysis)),collapse = ", ")) %>% 
+  tidyr::fill(everything(),.direction = "downup") %>% 
+  unique()
+#Now try to fill in all of the gene-ids from CIRI-vis results using granges
+gff <- read.delim(file="~/Google Drive/My Drive/Lotusjaponicus_Gifu_v1.2_predictedGenes.gff3", skip=8, header=F,na.strings = c(""," ")) #reading in your .gff file
+gff<-gff %>% 
+  filter(V3=="gene") %>% 
+  mutate(gene_id=gsub(pattern="ID=",replacement="",x=V9)) %>% 
+  select(V1,V4,V5,V7,gene_id) %>% 
+  unique()
+library(GenomicRanges)
+gene_grange<-GRanges(seqnames = gff$V1,
+                     ranges=IRanges(start=gff$V4,end=gff$V5,names = gff$gene_id),strand=gff$V7)
+  
+  
+  
+simple_plotting_circs<-annotated_full_clustered_circs_miRNA_added_Collapsed %>%
+  ungroup() %>% 
+  select(New_circ_ID,circRNA_start,circRNA_end,chr,strand) %>% 
+  filter(chr!="LjG1.1_chr0") %>%
+  mutate(chr=as.factor(chr)) %>% 
+  unique()
+
+simplecircGranges<-GRanges(seqnames = simple_plotting_circs$chr,
+                       ranges= IRanges(start = simple_plotting_circs$circRNA_start,end = simple_plotting_circs$circRNA_end, names=simple_plotting_circs$New_circ_ID),
+                     strand=simple_plotting_circs$strand)
+
+gene_circ_overlap<-findOverlaps(query = simplecircGranges,subject = gene_grange,type = "any")
+
+overlaps_df<-data.frame(New_circ_ID=names(simplecircGranges@ranges[gene_circ_overlap@from]),gene_id=names(gene_grange@ranges[gene_circ_overlap@to]))
+
+#okay now we can use the overlapping genes df to fill in missing geneIDs
+
+#test_add_genes<-full_join(annotated_full_clustered_circs_miRNA_added_Collapsed, overlaps_df, by = #"New_circ_ID") %>% 
+#  mutate(gene_id = coalesce(gene_id.x, gene_id.y)) %>% 
+#  select(-gene_id.x,-gene_id.y)
+
+geneless_circs<-annotated_full_clustered_circs_miRNA_added_Collapsed$New_circ_ID[is.na(annotated_full_clustered_circs_miRNA_added_Collapsed$gene_id)]
+
+#this generates a lot of warnings because it is not an elageant solution for edgecases (when circRNAs have overlaps with multiple genes, when circRNAs are not in an area with an annotated gene, etc). It is imperfect but does reduce the number of NAs 
+suppressMessages(
+for(circ in geneless_circs){
+  try(annotated_full_clustered_circs_miRNA_added_Collapsed$gene_id[annotated_full_clustered_circs_miRNA_added_Collapsed$New_circ_ID==circ]<-overlaps_df$gene_id[overlaps_df$New_circ_ID==circ])
+})
+sum(is.na(annotated_full_clustered_circs_miRNA_added$gene_id))
+sum(is.na(annotated_full_clustered_circs_miRNA_added_Collapsed$gene_id))
+#takes it from ~ 20k down to 642 with no annotated gene, a pretty good improvement. 
+
+```
+
+```{r Export}
+Export_Directory<-sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/CircRNA/Analysis/",Google_Drive_prefix)
+
+#Export Large overlapping Sheet
+Date="250124"
+
+#Full Data set
+README_Export<-"Data was generated from CIRI-full results of the full Commensal and symbiote experiments - full circRNA sequences were put directly into psRNATargetv2 with default settings and targeted with the Lj miRNAs available from Mirbase, circRNA sequences were also offset by 40nt so that backsplice junction sequences are contiguous. Both original andd offset circRNA sequences were analyzed for miRNA target sites and the column Distinct to Offset declares whether or not a miRNA is specific to the offset (i.e. targeting proximal to the BSJ). CircRNA-miRNA target pairs are shown with additional information merged in from the original CIRI2 results (i.e. a circRNAs information may be coming from the original CIRI2 data rather than the CIRI-full results (for example if a circRNA was discovered in different sample conditions but with identical BSJ by CIRI2 and CIRI-full, this dataset contains each occurence discovered by CIRI-full or CIRI2 matched with the miRNA target prediction)). Compared to the earlier version this version is clustered by circRNA BSJ and missing data is infilled where possible so that gene IDs and product information is present. Improvement made to labeling gene_IDs from ciri-vis circs and actually collapsing observations of the same circ in the same sample from different analysis software as of 250124"
+export_miRNA_circs <- list("README" = README_Export, "Circs_miRNA_included" = annotated_full_clustered_circs_miRNA_added_Collapsed)
+openxlsx::write.xlsx(x=export_miRNA_circs,file=sprintf("%s%s_annotated_circs_miRNA_included.xlsx",Export_Directory,Date))
+```
+
+```{r add in miRNA target info for DEGs}
+#first need to try to simplify the ALL_CDS to only those at the gene level, otherwise the dataframes will be too large to work with conveniently
+#NOTE:in order to discard duplicates I need to remove the target start and target end sites as these will be slightly shifted on some isoforms - an unfortunate consequence of this is that some miRNAs with multiple hits on a single isoform could be incorrectly treated as a single hit if the other binding characteristics (alignment, Evalue, query start and end, etc. ) are maintained
+CDS_miRNA_gene_level<-cds_RME_psRNA %>% 
+  select(!Target_start & !Target_end) %>%
+  mutate(Target_Acc. = gsub(x=Target_Acc.,pattern="\\..+$",replacement="")) %>% 
+  unique()
+
+#merge in the miRNAs for the combined dataset
+DEGS_miRNA<-merge(CDS_miRNA_gene_level, DEGs[,c(2,5,6,1,8)],by.x="Target_Acc.",by.y="genes")
+
+```
+If a pairwise comparison network approach is taken there are 6 comparisons 
+RhizVsAM
+RhizVsLN
+RhizVsHN
+
+AMVsLN
+AMVsHN
+
+LNvsHN
+
+```{r check replication}
+annotated_full_clustered_circs %>% 
+  select(Treatment,Sample) %>% 
+  group_by(Treatment) %>% 
+  summarize(replicates=n_distinct(Sample))
+```
+
+Since HN is less represented in terms of replicates let's leave it out for now and focus on AM,Rhiz, and LN
+
+Start with Rhiz vs LN
+```{r Build network for Rhiz vs LN}
+library(stringr)
+#pull the circRNAs found in at least 6/7 Rhiz replicates
+#pull the circRNAs found in at least 6/7 control replicates 
+
+
+RhizVsLN_dataset1<- annotated_full_clustered_circs_miRNA_added_Collapsed%>%
+  filter(Treatment %in% c("Rhiz","Low Nutrient")) %>% 
+  group_by(New_circ_ID,Treatment) %>%
+  dplyr::mutate(Samp_trt_count=n_distinct(Sample)) %>% 
+  ungroup() %>% 
+  group_by(New_circ_ID) %>% 
+  filter(max(Samp_trt_count)>=6) %>% 
+  select(!Samp_trt_count)
+
+
+#Prepare circRNA nodes
+#this will ultimately be part of the nodes data for the network. 
+  #We care about presence (Rhiz / LN / Both), 
+  #potentially broad/qualitative levels of expression - low medium and high? ciri or clear? replicate? -PUT A PIN IN THIS
+  #at what level is the analysis? isoform? CircRNA cluster? - try isoform first
+
+
+RhizVsLN_dataset2<-RhizVsLN_dataset1 %>%  
+  select(New_circ_ID, circRNA_ID,isoform_exp,isoform_length,Image_ID, Treatment) %>% 
+  #if we are moving between observations the only way to identify isoforms is by length meaning we are making the assumption that if the backsplice junction is identical and the length is identical there is only a single isoform - likely not true in 100% of cases. Could potentially probe this with isoform circexons at some point . . .
+  ungroup() %>% 
+  group_by(New_circ_ID, isoform_length) %>%  
+  dplyr::mutate(Presence= paste(sort(unique(Treatment)),collapse = " ")) %>% 
+  ungroup()
+#reformat presence labels
+RhizVsLN_dataset2$Presence<-gsub(RhizVsLN_dataset2$Presence, pattern="Low Nutrient Rhiz", replace="Both")
+
+#Connect miRNA data to circRNA nodes to prepare miRNA nodes and circRNA-miRNA edges
+Full_miRNA_results$Length<-as.numeric(str_remove(Full_miRNA_results$Length,pattern = "length="))
+colnames(Full_miRNA_results)[15]<-"isoform_length"
+
+miRNA_RvsLN_dataset1<-merge(RhizVsLN_dataset2, Full_miRNA_results,by=c("circRNA_ID","isoform_length"))
+#filter down to final set of info for miRNA nodes and the edges connecting
+#this is also where an Expect value cutoff could be implemented
+#miRNA nodes - just need the miRNA_acc. itself 
+#miRNA-circRNA edges need the miRNA and circRNA id and qualities 
+  #distinct to offset is nice
+  #evalue is okay though likely hard to visualize - evalue and multiplicity could be integrated into a single metric 
+  #inhibition type is nice to be able to observe since we may see it relate to something interesting
+
+miRNA_RvsLN_dataset2<-miRNA_RvsLN_dataset1 %>%  
+  select(New_circ_ID,isoform_length, miRNA_Acc., Expectation,Distinct_to_Offset,Inhibition,Multiplicity) %>% 
+  group_by(New_circ_ID,isoform_length, miRNA_Acc.,Distinct_to_Offset,Inhibition) %>% 
+  dplyr::summarise(Expectation=mean(Expectation),Multiplicity=max(Multiplicity)) %>% 
+  unique()
+
+miRNA_nodes_circ<-as.data.frame(miRNA_RvsLN_dataset2$miRNA_Acc.)
+#circRNA miRNA edges
+miRNA_RvsLN_dataset2$To<-paste(miRNA_RvsLN_dataset2$New_circ_ID,'-Iso-',miRNA_RvsLN_dataset2$isoform_length,sep = "")
+miRNA_Circ_Edges<-miRNA_RvsLN_dataset2[,c(3,8,4:7)]
+
+#build the nodes for circ and microRNAs
+RhizVsLN_dataset2$Nodes<-paste(RhizVsLN_dataset2$New_circ_ID,'-Iso-',RhizVsLN_dataset2$isoform_length,sep = "")
+
+
+circ_miRNA_Nodes<-RhizVsLN_dataset2[,c(8,7)]
+circ_miRNA_Nodes<-circ_miRNA_Nodes[circ_miRNA_Nodes$Nodes %in% miRNA_RvsLN_dataset2$To,]
+circ_miRNA_Nodes$Type<-"circRNA"
+miRNA_nodes_circ$Presence<-NA
+miRNA_nodes_circ$Type<-"miRNA"
+colnames(miRNA_nodes_circ)<-c("Nodes","Presence","Type")
+circ_miRNA_Nodes<-rbind.data.frame(circ_miRNA_Nodes,miRNA_nodes_circ)
+circ_miRNA_Nodes<-unique(circ_miRNA_Nodes)
+
+
+#Pull in the DEG info 
+unique(DEGs$comparison)
+DEG_RvsLN<-DEGs %>% 
+  dplyr::filter(comparison=="RhizvsLn") %>% 
+  dplyr::filter(abs(logFC)>=2) %>% 
+  dplyr::filter(FDR<=.1)
+
+#prefilter degs MiRNA
+#Pull in the MiRNA-gene targeting info 
+miRNA_DEG_RvsLN<-merge(x=DEG_RvsLN,y=DEGS_miRNA[DEGS_miRNA$comparison=="RhizvsLn",], by.x="genes",by.y="Target_Acc.")
+miRNA_DEG_RvsLN_2<-miRNA_DEG_RvsLN %>% 
+  select(miRNA_Acc.,genes,Expectation,Inhibition,Multiplicity)
+colnames(miRNA_DEG_RvsLN_2)[2]<-"To"
+
+#format and combine edges
+miRNA_Circ_Edges<-miRNA_Circ_Edges[,c(1:3,5:6,4)]
+RvsLN_edges<-bind_rows(miRNA_Circ_Edges,miRNA_DEG_RvsLN_2)
+
+#add gene and miRNA nodes 
+miRNA_nodes_deg<-as.data.frame(miRNA_DEG_RvsLN_2$miRNA_Acc.)
+colnames(miRNA_nodes_deg)<-c("Nodes")
+miRNA_nodes_deg$Presence<-NA
+miRNA_nodes_deg$Type<-"miRNA"
+
+DEG_nodes<-cbind.data.frame(miRNA_DEG_RvsLN$genes,miRNA_DEG_RvsLN$logFC.x)
+colnames(DEG_nodes)<-c("Nodes","logFC")
+DEG_nodes$Presence<-NA
+DEG_nodes$Type<-"Gene"
+RvsLN_Nodes<-bind_rows(circ_miRNA_Nodes,miRNA_nodes_deg,DEG_nodes)
+RvsLN_Nodes<-unique(RvsLN_Nodes)
+
+RvsLN_net1<-graph_from_data_frame(RvsLN_edges,directed = T, vertices = RvsLN_Nodes)
+
+
+RvsLN_net1_TG<-as_tbl_graph(RvsLN_net1)
+RvsLN_net1<-graph_from_data_frame(RvsLN_edges,directed = T, vertices = RvsLN_Nodes)
+
+
+
+RvsLN_net1_TG<-as_tbl_graph(RvsLN_net1)
+```
+
+```{r Add in collapse}
+#collapse miRNAs from different genes into a single node in edges (provided expectation and multiplicity are the same)
+RvsLN_edges_col<-RvsLN_edges
+RvsLN_edges_col$miRNA_Acc.<-gsub(RvsLN_edges_col$miRNA_Acc.,pattern="^lja-miR(\\d*)[[:lower:]]",replacement="lja-miR\\1")
+RvsLN_edges_col<-unique(RvsLN_edges_col)
+
+#do the same in nodes
+RvsLN_Nodes_col<-RvsLN_Nodes
+RvsLN_Nodes_col$Nodes<-gsub(RvsLN_Nodes_col$Nodes,pattern="^lja-miR(\\d*)[[:lower:]]",replacement="lja-miR\\1")
+RvsLN_Nodes_col<-unique(RvsLN_Nodes_col)
+
+RvsLN_edges_col$miRNA_Acc.[which( !(RvsLN_edges_col$miRNA_Acc. %in% RvsLN_Nodes_col$Nodes))]
+
+RvsLN_net1_Col_TG<-as_tbl_graph(graph_from_data_frame(RvsLN_edges_col,directed = T, vertices = RvsLN_Nodes_col))
+
+```
+
+```{r full RvsLN interactive plot, with collapsed miRNAs}
+Ggraph3<-RvsLN_net1_Col_TG %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) + 
+  coord_fixed() + 
+  theme_graph()
+girafe(ggobj = Ggraph3, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+```
+
+```{r Zoom in on MIR2111 ?}
+
+
+MiR2111_subgraph <- RvsLN_net1_Col_TG %>% 
+  convert(to_local_neighborhood, 
+          node= which(.N()$name=="lja-miR2111-3p"), mode="all", order=5)
+
+MiR2111_subgraph_plot<-MiR2111_subgraph %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% "lja-miR2111-3p"),shape=42,size=6,color="gold",position = position_jitter())+
+geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement=""), fontface="bold"),nudge_y=0.3,size=1,)+
+  coord_fixed() + 
+  theme_graph()
+girafe(ggobj = MiR2111_subgraph_plot, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+
+
+```
+
+
+
+```{r try to make a subgraph with just cinnamoyl}
+#zoom in on cinnamoyl? LjG1.1_chr1:18146756-18147201,LjG1.1_chr1:18146757-18147201-Iso-359
+
+cinnamoyl_subg = RvsLN_net1_Col_TG %>%
+    convert(to_local_neighborhood,  
+          node = which(.N()$name == "LjG1.1_chr1:18146756-18147201,LjG1.1_chr1:18146757-18147201-Iso-359"), 
+          mode = "all", order= 4)
+str(cinnamoyl_subg)
+
+Ggraph4<-cinnamoyl_subg %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% "LjG1.1_chr1:18146756-18147201,LjG1.1_chr1:18146757-18147201-Iso-359"),shape=42,size=6,color="gold",position = position_jitter())+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  coord_fixed()+
+    theme_graph()
+girafe(ggobj = Ggraph4, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+```
+
+
+```{r look at local neighborhoods of miRNAs that are interesting based on literature}
+miRNA_list<-c(
+  "lja-miR171",
+  "lja-miR172",#lotus literature
+  "lja-miR397", #lotus literature
+  "lja-miR2111", #lotus literature
+  "lja-miR166", #tomato AM RNAome
+  "lja-miR390", #tomato AM RNAome
+  "lja-miR167", #medicago meristem
+  "lja-miR169" #mdicago
+)
+
+miRNA_grep_list<-"lja-miR172|lja-miR171|lja-miR397|lja-miR2111|lja-miR166|lja-miR390|lja-miR167|lja-miR169"
+
+keynodeslist<-RvsLN_net1_Col_TG %>% 
+  activate(nodes) %>% 
+  filter(grepl(x=.N()$name,pattern=miRNA_grep_list)) %>% 
+  select(name) %>% 
+  as.data.frame()
+
+for(node in 1:length(keynodeslist$name)){
+  #print(keynodeslist[node,1])
+  tmp_subgraph<-RvsLN_net1_Col_TG %>%
+    convert(.f=to_local_neighborhood,  
+          node = which(.N()$name ==keynodeslist[node,1]), 
+          mode = "all", order= 3)
+  if (node==1) {
+  miRNA_neighborhoods<-tmp_subgraph
+  }
+ else{
+  miRNA_neighborhoods<-graph_join(miRNA_neighborhoods,tmp_subgraph)
+ }
+}
+  
+
+
+cannonical_miRNA_plot<-miRNA_neighborhoods %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'fr')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = .4,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% keynodeslist$name),shape=42,size=3,color="gold",position = position_jitter())+
+  geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement=""), fontface="bold"),nudge_y=0.3,size=1,) +
+  coord_fixed() + 
+  theme_graph()
+girafe(ggobj = cannonical_miRNA_plot, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+
+
+```
+
+```{r just the graph from above}
+girafe(ggobj = cannonical_miRNA_plot, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+```
+
+```{r cannonical miRNA Subgraph - smaller for pag}
+miRNA_list<-c(
+  "lja-miR172",#lotus literature
+  "lja-miR2111", #lotus literature
+  "lja-miR167" #medicago meristem
+)
+
+miRNA_grep_list<-"lja-miR172|lja-miR2111|lja-miR167"
+keynodeslist<-NULL
+keynodeslist<-RvsLN_net1_Col_TG %>% 
+  activate(nodes) %>% 
+  filter(grepl(x=.N()$name,pattern=miRNA_grep_list)) %>% 
+  select(name) %>% 
+  as.data.frame()
+
+miRNA_neighborhoods<-NULL
+for(node in 1:length(keynodeslist$name)){
+  #print(keynodeslist[node,1])
+  tmp_subgraph<-RvsLN_net1_Col_TG %>%
+    convert(.f=to_local_neighborhood,  
+          node = which(.N()$name ==keynodeslist[node,1]), 
+          mode = "all", order= 3)
+  if (node==1) {
+  miRNA_neighborhoods<-tmp_subgraph
+  }
+ else{
+  miRNA_neighborhoods<-graph_join(miRNA_neighborhoods,tmp_subgraph)
+ }
+}
+  
+
+
+cannonical_miRNA_plot<-miRNA_neighborhoods %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'fr')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = .4,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  #geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% keynodeslist$name),shape=42,size=5,color="gold",position = position_jitter())+
+  geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement="")),nudge_y=0.3,size=3) +
+  geom_node_label(aes(filter=Type=="miRNA" & name %in% keynodeslist$name, label = gsub(x=.N()$name,pattern="lja-",replacement="")),nudge_y=0.3,size=3,fill = "gold") +
+  coord_fixed()+
+  theme_graph(base_family = "futura")
+
+girafe(ggobj = cannonical_miRNA_plot, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+#ggsave(filename="PAG_POSTER_EXPORT.png",plot=cannonical_miRNA_plot,width=12, height=12, units="in",dpi=300)
+
+
+```
+ 
+```{r SIDEQUEST: Pull information as table for Heike}
+#as.data.frame(miRNA_neighborhoods)
+can_miRNA_edges<-miRNA_neighborhoods %>% 
+  activate(edges) %>% 
+  as_tibble()
+
+can_miRNA_nodes<-miRNA_neighborhoods %>% 
+  activate(nodes) %>% 
+  as_tibble()
+
+can_miRNA_edges$miRNA<-can_miRNA_nodes$name[can_miRNA_edges$from]
+can_miRNA_edges$putative_target<-can_miRNA_nodes$name[can_miRNA_edges$to]
+can_miRNA_DF<-NULL
+can_miRNA_DF<-merge(x=can_miRNA_edges,y=can_miRNA_nodes,by.x="miRNA",by.y="name",all.x=T,all.y=F)
+can_miRNA_DF<-merge(x=can_miRNA_DF,y=can_miRNA_nodes,by.x="putative_target",by.y="name",all.x=T,all.y=F)
+#can_miRNA_dataframes<-as_tbl_graph(miRNA_neighborhoods)
+#str(can_miRNA_dataframes)
+
+colnames(can_miRNA_DF)
+can_miRNA_DF<-can_miRNA_DF[,-c(3,4,8,9,10,11,12,13,17)]
+colnames(can_miRNA_DF)<-c("putative_target","miRNA","Expectation","Inhibition","Multiplicity","Presence","Type","logFC")
+
+degs4merge<- DEGs %>% 
+  filter(comparison=="RhizvsLn") %>% 
+  select(genes,product) %>% 
+  unique()
+can_miRNA_DF2<-merge(can_miRNA_DF,y=degs4merge,by.x="putative_target",by.y="genes",all.x=T,all.y=F)
+
+
+#Prepare for export
+Export_Directory<-sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/CircRNA/Analysis/",Google_Drive_prefix)
+
+#Export Large overlapping Sheet
+Date="241227"
+
+#Full Data set
+README_Export<-"Data was generated from CIRI-full results of the full Commensal and symbiote experiments - full circRNA sequences were put directly into psRNATargetv2 with default settings and targeted with the Lj miRNAs available from Mirbase, circRNA sequences were also offset by 40nt so that backsplice junction sequences are contiguous. Both original andd offset circRNA sequences were analyzed for miRNA target sites and the column Distinct to Offset declares whether or not a miRNA is specific to the offset (i.e. targeting proximal to the BSJ). CircRNA-miRNA target pairs are shown with additional information merged in from the original CIRI2 results (i.e. a circRNAs information may be coming from the original CIRI2 data rather than the CIRI-full results (for example if a circRNA was discovered in different sample conditions but with identical BSJ by CIRI2 and CIRI-full, this dataset contains each occurence discovered by CIRI-full or CIRI2 matched with the miRNA target prediction)). Compared to the earlier version this version is clustered by circRNA BSJ and missing data is infilled where possible so that gene IDs and product information is present\n
+This is a subset of that data based first upon a comparison between Rhizobia and Low Nutrient treatments. All circRNAs are present in 6/7 of Rhiz or 6/7 of Low Nutrient. All DEGs are atleast 2logFC different and have a p-value less than .05. This is a subset anchored around miRNAs (mir172 and mir2111 from lotus literature and mir166 and mir390 from the tomato AM RNAome paper) and extending and merging out to 5 connections - fringe members likely have more connections not displayed here."
+export_can_miRNA_network<- list("README" = README_Export, "cannonical_miRNA_subnetwork" = can_miRNA_DF2)
+openxlsx::write.xlsx(x=export_can_miRNA_network,file=sprintf("%s%s_cannonical_miRNA_subnetwork.xlsx",Export_Directory,Date))
+```
+Analysis: Report some summary stats and make some graphics 
+1. Make distribution plot of all miRNA:circRNA interactions
+  -number of distinct miRNAs bound per-circ
+  -multiplicity per-circ
+  -total number of MREs per circ (#unique*multiplicity)
+```{r SIDEQUEST }
+#Create a table where each circRNA only has one row, that lists the number of unique and the total number of binding sites, 
+
+#first lets focus on getting one row per circ:miRNA and ensure that each row of that is unique
+#for this we will attempt to incorporate isoforms first and then remove if found necessary or more informative
+#isoforms are not correct - this is a problem in the underlying dataframe where I didn't sort on isoform size first because it relies on an assumption (that isoforms with the same bsj and same length are identical) and because it would make the original dataframe less useful - since for now these are for summary level information it is likely okay to not consider isoforms and to only take the largest intersect and asign it to a given bsj. 
+#CAVEAT: currently not collapsing different miRNA genes - I need to get clarity on this at some point. 
+Summary_of_circ2mirna<-annotated_full_clustered_circs_miRNA_added %>% 
+  select(New_circ_ID,miRNA_Acc.,Multiplicity,Distinct_to_Offset,Analysis) %>% 
+  filter(Analysis=="CIRI-vis") %>%  
+  #remove any rows with any with NAs
+  #filter(complete.cases(New_circ_ID,miRNA_Acc.,Distinct_to_Offset)) %>% 
+  unique() %>% 
+  mutate(miRNA_Acc.= ifelse(is.na(miRNA_Acc.), "None", miRNA_Acc.)) %>% 
+  mutate(Multiplicity= ifelse(is.na(Multiplicity), 0, Multiplicity)) %>% 
+  group_by(New_circ_ID) %>% 
+  mutate(Number_distinct_mre= ifelse("None" %in% miRNA_Acc., n_distinct(miRNA_Acc.)-1, n_distinct(miRNA_Acc.)),Total_Sites=sum(Multiplicity)) %>% 
+  select(!Analysis)
+#this is sufficient to get the multiplicity plot
+mult_plot_1 <-ggplot(data=Summary_of_circ2mirna[,c(1,3)])+
+  geom_freqpoly(mapping=aes(x=Multiplicity),bins = 6)
+mult_plot_1
+
+#Plot the number distinct and the total num
+number_distinct_plot_1 <-ggplot(data=Summary_of_circ2mirna[,c(1,5)])+
+  geom_histogram(mapping=aes(x=Number_distinct_mre),bins = 17,fill="lightblue",alpha=.3,stat="bin")+
+  xlim(c(1,max(Summary_of_circ2mirna$Total_Sites)))+
+  xlab(label = "Distinct MRE Sites per CircRNA")+
+  ylab(label="Number of CircRNAs")+
+  theme_minimal()
+number_distinct_plot_1
+
+
+
+number_distinct_plot_2 <-ggplot(data=Summary_of_circ2mirna[,c(1,5)])+
+  geom_histogram(mapping=aes(x=Number_distinct_mre),binwidth = 1,fill="lightblue",stat="bin")+
+  scale_x_continuous(breaks=scales::pretty_breaks(n = 15))+
+
+  xlab(label = "Distinct MRE Sites per CircRNA")+
+  ylab(label="Number of CircRNAs")+
+  scale_y_continuous(breaks=scales::pretty_breaks(n = 10))+
+  theme_classic()+
+  theme(axis.text = element_text(size=14),
+       axis.title = element_text(face = "bold",size=16),
+       )
+number_distinct_plot_2
+
+#Plot the number of total
+number_tot_plot_1 <-ggplot(data=Summary_of_circ2mirna[,c(1,6)])+
+  geom_density(mapping=aes(x=Total_Sites),bins = 17,fill="lightgreen",alpha=.3)+
+  xlim(c(1,max(Summary_of_circ2mirna$Total_Sites)))+
+  xlab(label = "Total MRE Sites per CircRNA")+
+  ylab(label="Number of CircRNAs")+
+  theme_minimal()
+number_tot_plot_1
+
+#ggsave(filename="Distinct_MRE_Sites_Hist.png",plot =number_distinct_plot_1)
+#ggsave(filename="Total_MRE_Sites_Hist.png",plot =number_tot_plot_1)
+
+
+```
+
+
+Take a look at some of the circRNA networks heike is interested in
+
+```{r SIDEQUEST investigate 'Brutus' homolog circRNAs}
+#"LjG1.1_chr4:82573773-82575480,LjG1.1_chr4:82573774-82575480" is one of at least 3 circRNAs from LotjaGi4g0453800
+
+
+#LjG1.1_chr4:82573773-82575480,LjG1.1_chr4:82573774-82575480-Iso-505
+# is the only one within the existing RhizVsLN network so we will start with making a subgraph of this one. 
+
+Brutus_subg = RvsLN_net1_TG %>%
+    convert(to_local_neighborhood,  
+          node = which(.N()$name == "LjG1.1_chr4:82573773-82575480,LjG1.1_chr4:82573774-82575480-Iso-505"), 
+          mode = "all", order= 5)
+str(Brutus_subg)
+
+Ggraph4<-Brutus_subg %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  geom_node_point(aes(fill=logFC, filter=Type=="circRNA" & name %in% "LjG1.1_chr4:82573773-82575480,LjG1.1_chr4:82573774-82575480-Iso-505"),shape=42,size=6,color="gold",position =position_nudge(y=.1))+
+  geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement="")),nudge_y=0.3,size=3,repel = T) +
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  coord_fixed()+
+    theme_graph()
+girafe(ggobj = Ggraph4, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+```
+
+```{r export brutus table}
+
+#as.data.frame(miRNA_neighborhoods)
+brutus_miRNA_edges<-Brutus_subg %>% 
+  activate(edges) %>% 
+  as_tibble()
+
+brutus_miRNA_nodes<-Brutus_subg %>% 
+  activate(nodes) %>% 
+  as_tibble()
+
+brutus_miRNA_edges$miRNA<-brutus_miRNA_nodes$name[brutus_miRNA_edges$from]
+brutus_miRNA_edges$putative_target<-brutus_miRNA_nodes$name[brutus_miRNA_edges$to]
+brutus_miRNA_DF<-NULL
+brutus_miRNA_DF<-merge(x=brutus_miRNA_edges,y=brutus_miRNA_nodes,by.x="miRNA",by.y="name",all.x=T,all.y=F)
+brutus_miRNA_DF<-merge(x=brutus_miRNA_DF,y=brutus_miRNA_nodes,by.x="putative_target",by.y="name",all.x=T,all.y=F)
+#brutus_miRNA_dataframes<-as_tbl_graph(miRNA_neighborhoods)
+#str(brutus_miRNA_dataframes)
+
+colnames(brutus_miRNA_DF)
+brutus_miRNA_DF<-brutus_miRNA_DF[,-c(3,4,8,9,10,11,12,13,17)]
+colnames(brutus_miRNA_DF)<-c("putative_target","miRNA","Expectation","Inhibition","Multiplicity","Presence","Type","logFC")
+
+degs4merge<- DEGs %>% 
+  filter(comparison=="RhizvsLn") %>% 
+  select(genes,product) %>% 
+  unique()
+brutus_miRNA_DF2<-merge(brutus_miRNA_DF,y=degs4merge,by.x="putative_target",by.y="genes",all.x=T,all.y=F)
+
+
+#Prepare for export
+Export_Directory<-sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/CircRNA/Analysis/",Google_Drive_prefix)
+
+#Export Large overlapping Sheet
+Date="250127"
+
+#Full Data set
+README_Export<-"Data was generated from CIRI-full results of the full Commensal and symbiote experiments - full circRNA sequences were put directly into psRNATargetv2 with default settings and targeted with the Lj miRNAs available from Mirbase, circRNA sequences were also offset by 40nt so that backsplice junction sequences are contiguous. Both original andd offset circRNA sequences were analyzed for miRNA target sites and the column Distinct to Offset declares whether or not a miRNA is specific to the offset (i.e. targeting proximal to the BSJ). CircRNA-miRNA target pairs are shown with additional information merged in from the original CIRI2 results (i.e. a circRNAs information may be coming from the original CIRI2 data rather than the CIRI-full results (for example if a circRNA was discovered in different sample conditions but with identical BSJ by CIRI2 and CIRI-full, this dataset contains each occurence discovered by CIRI-full or CIRI2 matched with the miRNA target prediction)). Compared to the earlier version this version is clustered by circRNA BSJ and missing data is infilled where possible so that gene IDs and product information is present\n
+This is a subset of that data based first upon a comparison between Rhizobia and Low Nutrient treatments. All circRNAs are present in at least 3/7 of Rhiz or 3/7 of Low Nutrient. All DEGs are atleast 2logFC different and have a p-value less than .05. This is a subset anchored around a circRNA (LjG1.1_chr4:82573773-82575480,LjG1.1_chr4:82573774-82575480) from the gene LotjaGi4g1v0453800 which is labeled as a brutus homolog and extending out to 5 connections - fringe members likely have more connections not displayed here."
+export_can_miRNA_network<- list("README" = README_Export, "Brutus_subnetwork" = brutus_miRNA_DF2)
+openxlsx::write.xlsx(x=export_can_miRNA_network,file=sprintf("%s%s_Brutus_subnetwork.xlsx",Export_Directory,Date))
+```
+
+
+
+
+ALTERNATIVE NETWORKS 
+Adjust network parameters for visualization of RNAs that Heike Selected
+
+```{r RhizVsLn with Relaxed Consistency }
+#pull the circRNAs found in at least 6/7 Rhiz replicates
+#pull the circRNAs found in at least 6/7 control replicates 
+
+
+RhizVsLN_dataset1<- annotated_full_clustered_circs_miRNA_added_Collapsed %>%
+  filter(Treatment %in% c("Rhiz","Low Nutrient")) %>% 
+  group_by(New_circ_ID,Treatment) %>%
+  dplyr::mutate(Samp_trt_count=n_distinct(Sample)) %>% 
+  ungroup() %>% 
+  group_by(New_circ_ID) %>% 
+  filter(max(Samp_trt_count)>=3) %>% 
+  select(!Samp_trt_count)
+
+
+#Prepare circRNA nodes
+#this will ultimately be part of the nodes data for the network. 
+  #We care about presence (Rhiz / LN / Both), 
+  #potentially broad/qualitative levels of expression - low medium and high? ciri or clear? replicate? -PUT A PIN IN THIS
+  #at what level is the analysis? isoform? CircRNA cluster? - try isoform first
+
+
+RhizVsLN_dataset2<-RhizVsLN_dataset1 %>%  
+  select(New_circ_ID, circRNA_ID,isoform_exp,isoform_length,Image_ID, Treatment) %>% 
+  #if we are moving between observations the only way to identify isoforms is by length meaning we are making the assumption that if the backsplice junction is identical and the length is identical there is only a single isoform - likely not true in 100% of cases. Could potentially probe this with isoform circexons at some point . . .
+  ungroup() %>% 
+  group_by(New_circ_ID, isoform_length) %>%  
+  dplyr::mutate(Presence= paste(sort(unique(Treatment)),collapse = " ")) %>% 
+  ungroup()
+#reformat presence labels
+RhizVsLN_dataset2$Presence<-gsub(RhizVsLN_dataset2$Presence, pattern="Low Nutrient Rhiz", replace="Both")
+
+#Connect miRNA data to circRNA nodes to prepare miRNA nodes and circRNA-miRNA edges
+#Full_miRNA_results$Length<-as.numeric(str_remove(Full_miRNA_results$Length,pattern = "length="))
+#colnames(Full_miRNA_results)[15]<-"isoform_length"
+
+miRNA_RvsLN_dataset1<-merge(RhizVsLN_dataset2, Full_miRNA_results,by=c("circRNA_ID","isoform_length"))
+#filter down to final set of info for miRNA nodes and the edges connecting
+#this is also where an Expect value cutoff could be implemented
+#miRNA nodes - just need the miRNA_acc. itself 
+#miRNA-circRNA edges need the miRNA and circRNA id and qualities 
+  #distinct to offset is nice
+  #evalue is okay though likely hard to visualize - evalue and multiplicity could be integrated into a single metric 
+  #inhibition type is nice to be able to observe since we may see it relate to something interesting
+
+miRNA_RvsLN_dataset2<-miRNA_RvsLN_dataset1 %>%  
+  select(New_circ_ID,isoform_length, miRNA_Acc., Expectation,Distinct_to_Offset,Inhibition,Multiplicity) %>% 
+  group_by(New_circ_ID,isoform_length, miRNA_Acc.,Distinct_to_Offset,Inhibition) %>% 
+  dplyr::summarise(Expectation=mean(Expectation),Multiplicity=max(Multiplicity)) %>% 
+  unique()
+
+miRNA_nodes_circ<-as.data.frame(miRNA_RvsLN_dataset2$miRNA_Acc.)
+#circRNA miRNA edges
+miRNA_RvsLN_dataset2$To<-paste(miRNA_RvsLN_dataset2$New_circ_ID,'-Iso-',miRNA_RvsLN_dataset2$isoform_length,sep = "")
+miRNA_Circ_Edges<-miRNA_RvsLN_dataset2[,c(3,8,4:7)]
+
+#build the nodes for circ and microRNAs
+RhizVsLN_dataset2$Nodes<-paste(RhizVsLN_dataset2$New_circ_ID,'-Iso-',RhizVsLN_dataset2$isoform_length,sep = "")
+
+
+circ_miRNA_Nodes<-RhizVsLN_dataset2[,c(8,7)]
+circ_miRNA_Nodes<-circ_miRNA_Nodes[circ_miRNA_Nodes$Nodes %in% miRNA_RvsLN_dataset2$To,]
+circ_miRNA_Nodes$Type<-"circRNA"
+miRNA_nodes_circ$Presence<-NA
+miRNA_nodes_circ$Type<-"miRNA"
+colnames(miRNA_nodes_circ)<-c("Nodes","Presence","Type")
+circ_miRNA_Nodes<-rbind.data.frame(circ_miRNA_Nodes,miRNA_nodes_circ)
+circ_miRNA_Nodes<-unique(circ_miRNA_Nodes)
+
+
+#Pull in the DEG info 
+unique(DEGs$comparison)
+DEG_RvsLN<-DEGs %>% 
+  dplyr::filter(comparison=="RhizvsLn") %>% 
+  dplyr::filter(abs(logFC)>=2) %>% 
+  dplyr::filter(FDR<=.1)
+
+#prefilter degs MiRNA
+#Pull in the MiRNA-gene targeting info 
+miRNA_DEG_RvsLN<-merge(x=DEG_RvsLN,y=DEGS_miRNA[DEGS_miRNA$comparison=="RhizvsLn",], by.x="genes",by.y="Target_Acc.")
+miRNA_DEG_RvsLN_2<-miRNA_DEG_RvsLN %>% 
+  select(miRNA_Acc.,genes,Expectation,Inhibition,Multiplicity)
+colnames(miRNA_DEG_RvsLN_2)[2]<-"To"
+
+#format and combine edges
+miRNA_Circ_Edges<-miRNA_Circ_Edges[,c(1:3,5:6,4)]
+RvsLN_edges<-bind_rows(miRNA_Circ_Edges,miRNA_DEG_RvsLN_2)
+
+#add gene and miRNA nodes 
+miRNA_nodes_deg<-as.data.frame(miRNA_DEG_RvsLN_2$miRNA_Acc.)
+colnames(miRNA_nodes_deg)<-c("Nodes")
+miRNA_nodes_deg$Presence<-NA
+miRNA_nodes_deg$Type<-"miRNA"
+
+DEG_nodes<-cbind.data.frame(miRNA_DEG_RvsLN$genes,miRNA_DEG_RvsLN$logFC.x)
+colnames(DEG_nodes)<-c("Nodes","logFC")
+DEG_nodes$Presence<-NA
+DEG_nodes$Type<-"Gene"
+RvsLN_Nodes<-bind_rows(circ_miRNA_Nodes,miRNA_nodes_deg,DEG_nodes)
+RvsLN_Nodes<-unique(RvsLN_Nodes)
+
+RvsLN_net1<-graph_from_data_frame(RvsLN_edges,directed = T, vertices = RvsLN_Nodes)
+
+
+RvsLN_net1_TG<-as_tbl_graph(RvsLN_net1)
+```
+
+```{r Add in collapse}
+#collapse miRNAs from different genes into a single node in edges (provided expectation and multiplicity are the same)
+RvsLN_edges_col<-RvsLN_edges
+RvsLN_edges_col$miRNA_Acc.<-gsub(RvsLN_edges_col$miRNA_Acc.,pattern="^lja-miR(\\d*)[[:lower:]]",replacement="lja-miR\\1")
+RvsLN_edges_col<-unique(RvsLN_edges_col)
+
+#do the same in nodes
+RvsLN_Nodes_col<-RvsLN_Nodes
+RvsLN_Nodes_col$Nodes<-gsub(RvsLN_Nodes_col$Nodes,pattern="^lja-miR(\\d*)[[:lower:]]",replacement="lja-miR\\1")
+RvsLN_Nodes_col<-unique(RvsLN_Nodes_col)
+
+RvsLN_edges_col$miRNA_Acc.[which( !(RvsLN_edges_col$miRNA_Acc. %in% RvsLN_Nodes_col$Nodes))]
+
+RvsLN_net1_Col_TG<-as_tbl_graph(graph_from_data_frame(RvsLN_edges_col,directed = T, vertices = RvsLN_Nodes_col))
+
+```
+
+```{r brief look at full network with looser consistency requirement}
+Ggraph3<-RvsLN_net1_TG %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(width = .6, color = 'grey')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) + 
+  coord_fixed() + 
+  theme_graph()
+girafe(ggobj = Ggraph3, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+```
+
+```{r Zoom in on LjG1.1_chr2:48682335-48682754-Iso-420}
+#LotjaGi2g1v0134400.1 - Carbamoyl-phosphate synthase large chain - mir11117a-5p
+
+CBS_circ_subg = RvsLN_net1_TG %>%
+    convert(to_local_neighborhood,  
+          node = which(.N()$name == "LjG1.1_chr2:48682335-48682754-Iso-420"), 
+          mode = "all", order= 5)
+str(CBS_circ_subg)
+
+Ggraph4<-CBS_circ_subg %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'kk')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(aes(edge_width = Multiplicity),lineend = "butt", color = 'grey')+
+  #geom_edge_bundle_force(n_cycle = 2, threshold = 0.4,color = 'grey')+ 
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = 1,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  geom_node_point(aes(fill=logFC, filter=Type=="circRNA" & name %in% c( "LjG1.1_chr2:48682335-48682754-Iso-420","LjG1.1_chr2:48683036-48683266,LjG1.1_chr2:48683045-48683266,LjG1.1_chr2:48683042-48683266,LjG1.1_chr2:48683039-48683266-Iso-228","LjG1.1_chr2:48683036-48683266,LjG1.1_chr2:48683045-48683266,LjG1.1_chr2:48683042-48683266,LjG1.1_chr2:48683039-48683266-Iso-231")),shape=42,size=6,color="gold",position =position_nudge(y=.1))+
+  geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement="")),nudge_y=0.3,size=3,repel = T) +
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  coord_fixed()+
+    theme_graph()
+girafe(ggobj = Ggraph4, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+```
+
+
+
+
+```{r Take a look at CSP-centric network}
+#first define CSP genes and circRNAs from CSP genes
+
+csp_gene_list<-read.csv(file="CSP_Genelist.csv",header = T)
+
+csp_circs<-merge(y = annotated_full_clustered_circs_miRNA_added_Collapsed,x=csp_gene_list,by="gene_id",all.x=F,all.y=F)
+
+csp_nodeslist<-c(unique(paste0(csp_circs$New_circ_ID,"-iso-",csp_circs$isoform_length)),unique(csp_gene_list$gene_id))
+
+#make grepl version too
+csp_greplist<-paste(c(unique(csp_circs$New_circ_ID),unique(csp_gene_list$gene_id)),collapse = "|")
+head(csp_nodeslist)
+CSP_nodeslist<-RvsLN_net1_TG %>% 
+  activate(nodes) %>% 
+  filter(grepl(x=.N()$name,pattern=csp_greplist)) %>% 
+  select(name) %>% 
+  as.data.frame()
+
+csp_neighborhoods<-NULL
+for(node in 1:length(CSP_nodeslist$name)){
+  #print(keynodeslist[node,1])
+  tmp_subgraph<-RvsLN_net1_TG %>%
+    convert(.f=to_local_neighborhood,  
+          node = which(.N()$name ==CSP_nodeslist[node,1]), 
+          mode = "all", order= 4)
+  if (node==1) {
+  csp_neighborhoods<-tmp_subgraph
+  }
+ else{
+  csp_neighborhoods<-graph_join(csp_neighborhoods,tmp_subgraph)
+ }
+}
+  
+
+
+csp_net_plot<-csp_neighborhoods %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'fr')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(lineend = "butt", color = 'grey')+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'purple')+
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = .4,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  #geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% keynodeslist$name),shape=42,size=5,color="gold",position = position_jitter())+
+ # geom_node_label(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement="")),nudge_y=0.3,size=3) +
+  geom_node_label(aes(filter=name %in% CSP_nodeslist$name, label = .N()$name),nudge_y=0.1,size=1.5,fill = "gold",repel = T,alpha = .8) +
+  coord_fixed()+
+  theme_graph(base_family = "futura")
+
+girafe(ggobj = csp_net_plot, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+
+#ggsave(filename="csp_exportd.png",plot=cannonical_miRNA_plot,width=12, height=12, units="in",dpi=300)
+
+
+
+```
+
+
+```{r export csp Subnetwork}
+
+#as.data.frame(miRNA_neighborhoods)
+csp_miRNA_edges<-csp_neighborhoods %>% 
+  activate(edges) %>% 
+  as_tibble()
+
+csp_miRNA_nodes<-csp_neighborhoods %>% 
+  activate(nodes) %>% 
+  as_tibble()
+
+csp_miRNA_edges$miRNA<-csp_miRNA_nodes$name[csp_miRNA_edges$from]
+csp_miRNA_edges$putative_target<-csp_miRNA_nodes$name[csp_miRNA_edges$to]
+csp_miRNA_DF<-NULL
+csp_miRNA_DF<-merge(x=csp_miRNA_edges,y=csp_miRNA_nodes,by.x="miRNA",by.y="name",all.x=T,all.y=F)
+csp_miRNA_DF<-merge(x=csp_miRNA_DF,y=csp_miRNA_nodes,by.x="putative_target",by.y="name",all.x=T,all.y=F)
+#csp_miRNA_dataframes<-as_tbl_graph(miRNA_neighborhoods)
+#str(csp_miRNA_dataframes)
+
+colnames(csp_miRNA_DF)
+csp_miRNA_DF<-csp_miRNA_DF[,-c(3,4,8,9,10,11,12,13,17)]
+colnames(csp_miRNA_DF)<-c("putative_target","miRNA","Expectation","Inhibition","Multiplicity","Presence","Type","logFC")
+
+
+#add in circRNA parent-genes
+circ_genes<- RhizVsLN_dataset1 %>%  
+  select(New_circ_ID, circRNA_ID,isoform_exp,isoform_length,gene_id,Product) %>% 
+  mutate(merge_circ_id=paste(New_circ_ID,'-Iso-',isoform_length,sep = "")) %>% 
+  unique()
+
+csp_miRNA_DF<-merge(x = csp_miRNA_DF,y=circ_genes,all.x=T,all.y=F,by.x="putative_target",by.y="merge_circ_id")
+
+degs4merge<- DEGs %>% 
+  filter(comparison=="RhizvsLn") %>% 
+  select(genes,product) %>% 
+  unique()
+csp_miRNA_DF2<-merge(csp_miRNA_DF,y=degs4merge,by.x="putative_target",by.y="genes",all.x=T,all.y=F)
+#Fill in products
+csp_miRNA_DF2$Product[is.na(csp_miRNA_DF2$Product)]<-csp_miRNA_DF2$product[is.na(csp_miRNA_DF2$Product)]
+
+#Prepare for export
+Export_Directory<-sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/CircRNA/Analysis/",Google_Drive_prefix)
+
+#Export Large overlapping Sheet
+Date="250131"
+
+#Full Data set
+README_Export<-"Data was generated from CIRI-full results of the full Commensal and symbiote experiments - full circRNA sequences were put directly into psRNATargetv2 with default settings and targeted with the Lj miRNAs available from Mirbase, circRNA sequences were also offset by 40nt so that backsplice junction sequences are contiguous. Both original andd offset circRNA sequences were analyzed for miRNA target sites and the column Distinct to Offset declares whether or not a miRNA is specific to the offset (i.e. targeting proximal to the BSJ). CircRNA-miRNA target pairs are shown with additional information merged in from the original CIRI2 results (i.e. a circRNAs information may be coming from the original CIRI2 data rather than the CIRI-full results (for example if a circRNA was discovered in different sample conditions but with identical BSJ by CIRI2 and CIRI-full, this dataset contains each occurence discovered by CIRI-full or CIRI2 matched with the miRNA target prediction)). Compared to the earlier version this version is clustered by circRNA BSJ and missing data is infilled where possible so that gene IDs and product information is present\n
+This is a subset of that data based first upon a comparison between Rhizobia and Low Nutrient treatments. All circRNAs are present in at least 3/7 of Rhiz or 3/7 of Low Nutrient. All DEGs are atleast 2logFC different and have a p-value less than .05. This is a subset anchored around CSP genes and circRNAs from circRNA genes and extending and merging out to 4 connections - fringe members likely have more connections not displayed here."
+export_can_miRNA_network<- list("README" = README_Export, "CSP_subnetwork" = csp_miRNA_DF2[,-15])
+openxlsx::write.xlsx(x=export_can_miRNA_network,file=sprintf("%s%s_CSP_subnetwork.xlsx",Export_Directory,Date))
+```
+
+```{r modifying CSP network image }
+#"LotjaGi1g1v0623800","LjTML"
+#"LjG1.1_chr2:60118087-60118709,LjG1.1_chr2:60118088-60118709-Iso-337","circVAG1"
+#"LjG1.1_chr1:52897103-52901085,LjG1.1_chr1:52897104-52901085-Iso-455","circCPS"
+csp_df_renamed<-csp_miRNA_DF %>% 
+  #simplify and collapse (where identical) miRNAs
+    mutate(miRNA=gsub(x=miRNA,pattern="lja-miR11072[cdefgh]-3p",replacement="lja-miR11072c:h-3p")) %>%
+    mutate(miRNA=gsub(x=miRNA,pattern="lja-miR7533[ab]",replacement="lja-miR7533a:b")) %>% 
+    mutate(miRNA=gsub(x=miRNA,pattern="lja-",replacement="")) %>% 
+  #label the TML gene
+    mutate(Label=putative_target) %>% 
+    mutate(Label=replace(Label, Label== "LotjaGi1g1v0623800","LjTML"))%>% 
+  #label circRNAs with gene info
+   mutate(Label=replace(Label, Label== "LjG1.1_chr2:60118087-60118709,LjG1.1_chr2:60118088-60118709-Iso-337","circVAG1"))%>% 
+    mutate(Label=replace(Label, Label== "LjG1.1_chr1:52897103-52901085,LjG1.1_chr1:52897104-52901085-Iso-455","circCPS"))%>% 
+    unique()
+#Remake it back into a network
+#grepl(x=csp_df_renamed$putative_target,pattern="LjG1.1_chr2:60118087-60118709,LjG1.1_chr2:60118088-60118709-Iso-337")
+csp_edges_renamed<-csp_df_renamed[,c(2,1,3)]
+colnames(csp_edges_renamed)<-c("miRNA_Acc.","To","Distinct_to_Offset")
+csp_nodes_renamed<-csp_df_renamed[,c(1,7,6,8,9)]
+
+csp_renamed_miRNA<-data.frame(putative_target=csp_df_renamed[,2],Type="miRNA",Presence=NA,logFC=NA,Label=NA)
+
+csp_nodes_renamed<-rbind.data.frame(csp_nodes_renamed,csp_renamed_miRNA)
+colnames(csp_nodes_renamed)[1]<-"name"
+
+csp_nodes_renamed<-unique(csp_nodes_renamed)
+csp_network_reconstructed<-graph_from_data_frame(csp_edges_renamed,directed = T, vertices = csp_nodes_renamed)
+csp_network_reconstructed_tg<-as_tbl_graph(csp_network_reconstructed)
+```
+
+```{r replot the reconstructed csp network}
+
+csp_net_plot2<-csp_network_reconstructed_tg %>% 
+  as.igraph() %>% 
+  ggraph(layout = 'fr')+
+  geom_point_interactive(size = 3,
+    mapping = aes(x = x, y = y, data_id=Type,
+                  tooltip = paste0(name)),alpha=0)+
+  geom_edge_fan(lineend = "butt", color = 'grey')+
+  geom_edge_fan(aes(filter=Distinct_to_Offset=="Yes"),width = .6, color = 'coral4')+
+  geom_node_voronoi(aes(fill=logFC, filter=Type=="Gene"),max.radius = .8,alpha=.8)+
+  scale_fill_viridis_c()+
+  geom_node_point(aes(filter=Type=="circRNA", shape=Type, color=Presence))+
+  scale_color_discrete(type = c("aquamarine3","steelblue","hotpink"))+
+  geom_node_point(aes(filter=Type=="miRNA", shape = Type)) +
+  #geom_node_point(aes(fill=logFC, filter=Type=="miRNA" & name %in% keynodeslist$name),shape=42,size=5,color="gold",position = position_jitter())+
+  geom_node_text(aes(filter=Type=="miRNA", label = gsub(x=.N()$name,pattern="lja-",replacement=""),fontface = "bold"),nudge_y=0.1,size=2,repel=T) +
+  geom_node_label(aes(filter=name %in% CSP_nodeslist$name, label = .N()$Label,fontface = "bold"),size=2,fill = "gold",nudge_y=0.1,repel = T,alpha = .8) +
+  coord_fixed()+
+  theme_graph(base_family = "futura")
+
+girafe(ggobj = csp_net_plot2, width_svg = 8, height_svg = 8,
+       options = list(opts_sizing(rescale = FALSE), opts_zoom(min = 1, max =3)))
+#ggsave(filename="csp_export_for_Figure.pdf",plot=csp_net_plot2,width=12, height=12, units="in",dpi=300)
+
+
+
+```
+
+
+

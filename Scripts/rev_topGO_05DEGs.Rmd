@@ -1,0 +1,247 @@
+---
+title: "rev_topGO_05DEGs"
+author: "Delecia U"
+date: "2025-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r topGO- setting up and starting with LnvsHn}
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("topGO")
+
+library(topGO)
+
+#Loading Your Data#
+#Read in GO annotations for the genes. This is the gene-to-GO file tab delimieted  you provide of gene-to-GO mappings.
+#using file Asa sent 
+
+geneID2GO <- readMappings(file = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/topGO/genetoGO.txt")
+
+
+#set the 'gen universe' as all the gene that contain GO annotation in your input file from above
+library(stringr)
+geneUniverse <- str_remove(string = names(geneID2GO), pattern = "\\.\\d+$")
+names(geneID2GO)<-str_remove(string = names(geneID2GO), pattern = "\\.\\d+$")
+
+
+
+#read in list of all data frames of interesting genes (just gene ID, one per line in txt file) these are ALL up and down regulated DEGs with cutoff <.05
+
+HnvsLn_genes_only <- read.table("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/HnvsLn.txt",header=FALSE)
+
+HnvsLn_genes_only <- as.character(HnvsLn_genes_only$V1)
+
+geneList <- factor(as.integer(geneUniverse %in% HnvsLn_genes_only ))
+
+names(geneList) <- geneUniverse
+
+myGOdata <- new(Class = "topGOdata", description="HnvsLn_genes_only", ontology="BP", allGenes=geneList, annot=annFUN.gene2GO, gene2GO=geneID2GO)
+
+#this test uses the default algorithm and fisher statistic test which panther also uses
+resultFisherw01_HnvsLn <- runTest(myGOdata, algorithm = "weight01", statistic="fisher")
+resultFisherw_HnvsLn <- runTest(myGOdata, algorithm = "weight", statistic="fisher")
+resultFisherelim_HnvsLn <- runTest(myGOdata, algorithm = "elim", statistic="fisher")
+resultFisherlea_HnvsLn <- runTest(myGOdata, algorithm = "lea", statistic="fisher")
+resultFisherpc_HnvsLn <- runTest(myGOdata, algorithm = "parentchild", statistic="fisher")
+resultFisherc_HnvsLn <- runTest(myGOdata, algorithm = "classic", statistic="fisher")
+
+sumtable_HnvsLn <- GenTable(myGOdata, weight = resultFisherw_HnvsLn, weight01 = resultFisherw01_HnvsLn, elim = resultFisherelim_HnvsLn, classic = resultFisherc_HnvsLn, lea = resultFisherlea_HnvsLn, parentchild = resultFisherpc_HnvsLn, orderBy = "weight01", ranksOf = "weight01", topNodes = 50)
+
+write.csv(sumtable_HnvsLn, "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/FRD05DEGs_sumtable_HnvsLn_fischer.05.csv")
+
+
+```
+
+
+```{r RhizvsLn}
+
+RhizvsLn_genes_only <- read.table("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/RhizvsLn.txt",header=FALSE)
+
+RhizvsLn_genes_only <- as.character(RhizvsLn_genes_only$V1)
+
+geneList <- factor(as.integer(geneUniverse %in% RhizvsLn_genes_only ))
+
+names(geneList) <- geneUniverse
+
+myGOdata2 <- new(Class = "topGOdata", description="RhizvsLn_genes_only", ontology="BP", allGenes=geneList, annot=annFUN.gene2GO, gene2GO=geneID2GO)
+
+resultFisherw01_RhizvsLn <- runTest(myGOdata2, algorithm = "weight01", statistic="fisher")
+resultFisherw_RhizvsLn <- runTest(myGOdata2, algorithm = "weight", statistic="fisher")
+resultFisherelim_RhizvsLn <- runTest(myGOdata2, algorithm = "elim", statistic="fisher")
+resultFisherlea_RhizvsLn <- runTest(myGOdata2, algorithm = "lea", statistic="fisher")
+resultFisherpc_RhizvsLn <- runTest(myGOdata2, algorithm = "parentchild", statistic="fisher")
+resultFisherc_RhizvsLn <- runTest(myGOdata2, algorithm = "classic", statistic="fisher")
+
+sumtable_RhizvsLn <- GenTable(myGOdata2, weight = resultFisherw_RhizvsLn, weight01 = resultFisherw01_RhizvsLn, elim = resultFisherelim_RhizvsLn, classic = resultFisherc_RhizvsLn, lea = resultFisherlea_RhizvsLn, parentchild = resultFisherpc_RhizvsLn, orderBy = "weight01", ranksOf = "weight01", topNodes = 50)
+
+write.csv(sumtable_RhizvsLn, "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/FDR05DEGs_sumtable_RhizvsLn_fischer.05.csv")
+
+
+```
+
+
+
+```{r adding columns to sumtables to tell them apart and then combining}
+
+library(tidyverse)
+
+sumtable_LnvsHn <- sumtable_HnvsLn %>%
+  add_column(Comparison = "HnvsLn") %>%
+  add_column(DEGdirection = "All")
+
+
+sumtable_RhizvsLn <- sumtable_RhizvsLn %>%
+  add_column(Comparison = "RhizvsLn") %>%
+  add_column(DEGdirection = "All")
+
+
+
+
+#combine into ine dataframe
+GO_allcontrasts <- bind_rows(sumtable_LnvsHn,sumtable_RhizvsLn)
+
+#Fold_enrichment column has some values as 'Inf' because it is dividing by 0. So must change all 0s in column 'Expected' to .009
+GO_allcontrasts$Expected[GO_allcontrasts$Expected==0]<-0.009
+
+#create a column of Fold Enrichment by doing significant divided by expected
+GO_allcontrasts <- transform(GO_allcontrasts, fold_enrichment = Significant / Expected)
+
+
+#must make pvalues numeric
+
+GO_allcontrasts$weight01<-as.numeric(GO_allcontrasts$weight01)
+
+
+#relabel term column with go term ID
+GO_allcontrasts$NewTerm<-paste(GO_allcontrasts$GO.ID, GO_allcontrasts$Term, sep = " | ")
+
+
+GO_allcontrasts_generatio <- GO_allcontrasts %>%
+  mutate(GeneRatio = Significant/Annotated)
+
+write.csv(GO_allcontrasts_generatio, "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/GO_allcontrasts_generatio.csv")
+
+
+```
+
+
+```{r visualizing}
+
+GO_allcontrasts_generatio <- read_csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/Go_allContrasts_generatio.csv")
+
+GO_allcontrasts_generatio$Comparison <- factor(GO_allcontrasts_generatio$Comparison, 
+                                               levels = c("HnvsLn", "RhizvsLn")) 
+                                                          
+
+# filtered_GO_allcontrasts_generatio <- GO_allcontrasts_generatio %>%
+#   filter(!Category %in% c("Category1", "Category2", "Category3"))
+
+# GO_all_ratio1 <- GO_allcontrasts_generatio %>%
+#   filter(Comparison %in% c("LnvsHn", "RhizvsHn", "RhizvsLn")) %>%
+#   filter(weight01 < 0.001) %>%
+#   # filter(fold_enrichment > 2) %>%
+#   ggplot(aes(x = Comparison, y = NewTerm, color = weight01, size = GeneRatio)) +
+#   geom_point() +
+#   scale_y_discrete() +
+#   scale_x_discrete(guide = guide_axis(angle = 90)) +
+#   scale_color_gradient(low = "red", high = "blue", name = "P-value", breaks = c(0.0008, 0.0006, 0.0004, 0.0002)) +
+#   theme_bw() + 
+#   ylab("") + 
+#   xlab("") + 
+#   ggtitle("GO BP all DEGs Pval<0.01, Fold>2") +
+#   theme(plot.title = element_text(hjust = 0.5))
+# 
+# GO_all_ratio <- GO_allcontrasts_generatio %>%
+#   filter(Comparison %in% c("LnvsHn", "RhizvsHn", "RhizvsLn")) %>%
+#   filter(weight01 < 0.001) %>%
+#   filter(fold_enrichment > 2) %>%
+#   ggplot(aes(x = Comparison, y = NewTerm, color = weight01, size = GeneRatio)) +
+#   geom_point() +
+#   scale_y_discrete() +
+#   scale_x_discrete(guide = guide_axis(angle = 90)) +
+#   scale_color_gradient(low = "red", high = "blue", name = "P-value", breaks = c(0.0008, 0.0006, 0.0004, 0.0002)) +
+#   theme_bw() + 
+#   ylab("") + 
+#   xlab("") + 
+#   ggtitle("GO BP all DEGs Pval<0.001, Fold>2") +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         plot.margin = margin(10, 10, 10, 50))  # Increase left margin
+# 
+# print(GO_all_ratio)
+
+#Plot with number of genes (Signficant) in GO 
+GO_all_genenum <- GO_allcontrasts_generatio %>%
+   filter(Comparison %in% c("HnvsLn", "RhizvsLn")) %>%
+  filter(weight01<0.05) %>%
+  # filter(fold_enrichment>2) %>%
+ filter(!NewTerm %in% c("GO:0055085 | transmembrane transport", "GO:0045944 | positive regulation of transcription by ...", "GO:0045454 | cell redox homeostasis", "GO:0042549 | photosystem II stabilization","GO:0015979 | photosynthesis", "GO:0010207 | photosystem II assembly", "GO:0009765 | photosynthesis, light harvesting", "GO:0009081 | branched-chain amino acid metabolic proc...", "GO:0006857 | oligopeptide transport", "GO:1902358 | sulfate transmembrane transport", "GO:2000123 | positive regulation of stomatal complex ...", "GO:0006809 | nitric oxide biosynthetic process", "GO:0006527 | arginine catabolic process", "GO:0006069 | ethanol oxidation", "GO:0006021 | inositol biosynthetic process", "GO:0009446 | putrescine biosynthetic process", "GO:0009772 | photosynthetic electron transport in pho...", "GO:0019464 | glycine decarboxylation via glycine clea...", "GO:0035434 | copper ion transmembrane transport", "GO:0030418 | nicotianamine biosynthetic process", "GO:0046938 | phytochelatin biosynthetic process", "GO:0071577 | zinc ion transmembrane transport", "GO:0070588 | calcium ion transmembrane transport", "GO:0046274 | lignin catabolic process", "GO:0042128 | nitrate assimilation", "GO:0030244 | cellulose biosynthetic process", "GO:0030001 | metal ion transport", "GO:0019953 | sexual reproduction", "GO:0019354 | siroheme biosynthetic process", "GO:0016117 | carotenoid biosynthetic process", "GO:0016104 | triterpenoid biosynthetic process", "GO:0015976 | carbon utilization","GO:0015743 | malate transport", "GO:0015706 | nitrate transmembrane transport", "GO:0010167 | response to nitrate", "GO:0006952 | defense response", "GO:0006596 | polyamine biosynthetic process", "GO:0006002 | fructose 6−phosphate metabolic process", "GO:0000272 | polysaccharide catabolic process")) %>%
+ggplot(aes(x = Comparison, y = NewTerm, color = weight01, size = Significant)) +
+  geom_point() +
+  scale_y_discrete()+
+  scale_size(name = "# Genes", breaks = c(2,4,6), range = c(2,5)) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_color_gradient(low = "red", high = "blue", name = "P-value", breaks = c(0.01, 0.02, 0.03, 0.04, 0.05)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("GO BP all DEGs Pval<0.05,Fold>2")+
+  theme(plot.title = element_blank(), 
+        axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 8),
+        legend.title = element_text(size = 8),
+        legend.text  = element_text(size = 7))
+
+print(GO_all_genenum)
+
+# Save the plot
+ggsave("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/FDR05_GO_all_genenum_plot.pdf", GO_all_genenum,
+       width = 6, height = 14, units = "in")
+
+
+# Save the actual R object (not just image)
+saveRDS(GO_all_genenum, file = "~/Documents/GitHub/Lotus_n_Friends/topGO_genenum.rds")
+
+
+GO_all_genenum2 <- GO_allcontrasts_generatio %>%
+   filter(Comparison %in% c("HnvsLn", "RhizvsLn")) %>%
+  filter(weight01<0.05) %>%
+  filter(fold_enrichment>2) %>%
+ filter(!NewTerm %in% c("GO:0055085 | transmembrane transport", "GO:0045944 | positive regulation of transcription by ...", "GO:0045454 | cell redox homeostasis", "GO:0042549 | photosystem II stabilization","GO:0015979 | photosynthesis", "GO:0010207 | photosystem II assembly", "GO:0009765 | photosynthesis, light harvesting", "GO:0009081 | branched-chain amino acid metabolic proc...", "GO:0006857 | oligopeptide transport", "GO:1902358 | sulfate transmembrane transport", "GO:2000123 | positive regulation of stomatal complex ...", "GO:0006809 | nitric oxide biosynthetic process", "GO:0006527 | arginine catabolic process", "GO:0006069 | ethanol oxidation", "GO:0006021 | inositol biosynthetic process", "GO:0009446 | putrescine biosynthetic process", "GO:0009772 | photosynthetic electron transport in pho...", "GO:0019464 | glycine decarboxylation via glycine clea...", "GO:0035434 | copper ion transmembrane transport", "GO:0030418 | nicotianamine biosynthetic process", "GO:0046938 | phytochelatin biosynthetic process", "GO:0071577 | zinc ion transmembrane transport", "GO:0070588 | calcium ion transmembrane transport", "GO:0046274 | lignin catabolic process", "GO:0042128 | nitrate assimilation", "GO:0030244 | cellulose biosynthetic process", "GO:0030001 | metal ion transport", "GO:0019953 | sexual reproduction", "GO:0019354 | siroheme biosynthetic process", "GO:0016117 | carotenoid biosynthetic process", "GO:0016104 | triterpenoid biosynthetic process", "GO:0015976 | carbon utilization","GO:0015743 | malate transport", "GO:0015706 | nitrate transmembrane transport", "GO:0010167 | response to nitrate", "GO:0006952 | defense response", "GO:0006596 | polyamine biosynthetic process", "GO:0006002 | fructose 6−phosphate metabolic process", "GO:0000272 | polysaccharide catabolic process")) %>%
+ggplot(aes(x = Comparison, y = NewTerm, color = weight01, size = Significant)) +
+  geom_point() +
+  scale_y_discrete()+
+  scale_size(name = "# Genes", breaks = c(2,4,6), range = c(2,5)) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_color_gradient(low = "red", high = "blue", name = "P-value", breaks = c(0.01, 0.02, 0.03, 0.04, 0.05)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("GO BP all DEGs Pval<0.05,Fold>2")+
+  theme(plot.title = element_blank(), 
+        axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 8),
+        legend.title = element_text(size = 8),
+        legend.text  = element_text(size = 7))
+
+print(GO_all_genenum2)
+
+# Save the plot
+# ggsave("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/topGO/DEGs_FDR05/FDR05_GO_all_genenum_plot2.pdf", GO_all_genenum,
+#        width = 6, height = 14, units = "in")
+
+
+# Save the actual R object (not just image)
+saveRDS(GO_all_genenum2, file = "~/Documents/GitHub/Lotus_n_Friends/topGO_genenum2.rds")
+
+
+
+
+
+```

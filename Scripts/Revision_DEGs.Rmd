@@ -1,0 +1,905 @@
+---
+title: "Revision_DEGs"
+author: "Delecia U"
+date: "2025-11-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Merging featurecounts files}
+
+
+folder <- "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts/Lotus"
+
+# Create your list of file names from above and put them in the correct order by sample ID
+files <- c("Hn_13.Lj_mapped_counts.txt", "Hn_14.Lj_mapped_counts.txt", "Hn_15.Lj_mapped_counts.txt",  
+ "Ln_4.Lj_mapped_counts.txt", "Ln_7.Lj_mapped_counts.txt", "Ln_10.Lj_mapped_counts.txt", "Ln_16.Lj_mapped_counts.txt", "Ln_17.Lj_mapped_counts.txt", "Rhiz_3.Lj_mapped_counts.txt", "Rhiz_9.Lj_mapped_counts.txt", "Rhiz_12.Lj_mapped_counts.txt",
+"Rhiz_22.Lj_mapped_counts.txt", "Rhiz_23.Lj_mapped_counts.txt") 
+
+
+files_full <- file.path(path.expand(folder), files)
+
+#Merge the first two files and store 
+file1<-read.table(files_full[1], skip=1, header=T)
+file2<-read.table(files_full[2], skip=1, header=T)
+out.file = merge(file1[,c(1,7)], file2[,c(1,7)], by=c("Geneid"))
+
+#Check the first 6 lines with:
+head(out.file)
+
+# For loop to merge the remaining files
+for(i in 3:length(files))
+{
+  file = read.table(files_full[i], skip=1, header=T)
+  out.file <- merge(out.file, file[,c(1,7)], by=c("Geneid"))
+}
+View(out.file)
+
+
+
+#Rename Geneid (first column) - called 'Geneid' by featureCounts but these are actually exon-level counts
+out.file <- out.file %>% dplyr::rename(exonId = Geneid)
+
+head(out.file)
+
+#####
+
+# # Prepare other dataframe to add annotation/gene product info
+# setwd("~/dutley@ncsu.edu - Google Drive/Shared drives/NCSU_InROOT/Commensal Experiment/Data - seq files/Linear RNA /featurecounts & DEGs/Lotus") #transfer annotation file to *your computer* and change to that path
+
+gff <- read.delim("~/dutley@ncsu.edu - Google Drive/Shared drives/NCSU_InROOT/Commensal Experiment/Data - seq files/Linear RNA /featurecounts & DEGs/Lotus/Lotusjaponicus_Gifu_v1.2_allPredictedGenes.gff3", skip=10, header=F) #reading in .gff file
+
+gff <- separate(data=gff,col=V9,into=c("isoformId","Product"),sep=";human_readable_description=") #creating separate columns
+gff$isoformId <- gsub("\\;.*", "", sub("ID=", "", gff$isoformId)) #removing extra info (everything after ; and 'ID=')
+#remove repeated products
+gffProduct <- gff %>% group_by(isoformId) %>% summarize(Product=toString(sort(unique(Product)))) #creating new dataframe with all product info for each gene
+#add new column to out.file to match to gffProduct
+out.file$transcriptId<-gsub("\\.exon.*","",out.file$exonId)
+out.file$Product<-gffProduct[match(out.file$transcriptId,gffProduct$isoformId),]$Product
+
+#####
+
+# # change working directory to where you want the output to go
+# setwd("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/featureCounts/Lotus/analysis")
+# #save merged exon-level counts output file - change file name to describe your samples
+# write.csv(out.file, file = "Lotus_fCounts_exonLevel.csv", row.names = FALSE)
+
+#collapse exon-level counts to isoform level; already have transcriptId column
+#in this context, 'transcript' = 'isoform'
+isocounts <- out.file %>% group_by(transcriptId) %>% summarize(Product=toString(sort(unique(Product))), across(c(Hn_13.Lj_mapped.bam:Rhiz_23.Lj_mapped.bam), sum))
+#confirm no isoforms were lost
+length(unique(out.file$transcriptId))
+# [1] 50067 - my values 
+length(unique(isocounts$transcriptId))
+# [1] 50067 - my values 
+
+#collapse isoform-level counts to gene-level
+library(splitstackshape)
+isocounts <- cSplit(isocounts, "transcriptId", sep=".", direction = "wide") #adds geneId column - will give warnings, okay to ignore them
+colnames(isocounts)[15]="geneId"
+genecounts <- isocounts %>% group_by(geneId) %>% summarize(Product=toString(sort(unique(Product))), across(c(Hn_13.Lj_mapped.bam:Rhiz_23.Lj_mapped.bam), sum))
+#confirm no genes were lost
+length(unique(isocounts$geneId))
+# [1] 30442
+length(unique(genecounts$geneId))
+# [1] 30442
+
+
+#write gene-level counts csv
+write.csv(genecounts, file = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Lotus_fCounts_geneLevel.csv", row.names = FALSE)
+
+```
+
+
+```{r DEGs}
+
+# calculate mean and variance summarized across all samples and create a new dataframe
+counts_mean_all<- apply(genecounts[,3:15], 1, mean)       
+#The second argument '1' of 'apply' function indicates the function being applied to rows. Use '2' if applied to columns
+counts_variance_all <- apply(genecounts[,3:15], 1, var)
+counts_df_all <- data.frame(counts_mean_all,counts_variance_all)
+
+
+# plot the distribution of the full dataset
+ggplot(counts_df_all) +
+  geom_point(aes(x=counts_mean_all, y=counts_variance_all)) +
+  scale_y_log10(limits = c(1,1e15)) +
+  scale_x_log10(limits = c(1,1e15)) +
+  geom_abline(intercept = 0, slope = 1, color="red")+
+  ggtitle("")
+
+# calculate mean and variance for each treatment group and create new dataframes
+
+# 1/2 MS Control - Mr 
+counts_mean_group1<- apply(genecounts[,c(3,4,5)], 1, mean)
+counts_variance_group1 <- apply(genecounts[,c(3,4,5)], 1, var)
+counts_df_group1 <- data.frame(counts_mean_group1,counts_variance_group1)
+
+#LN only - Cr
+counts_mean_group2<- apply(genecounts[,c(6,7,8,9,10)], 1, mean)
+counts_variance_group2 <- apply(genecounts[,c(6,7,8,9,10)], 1, var)
+counts_df_group2 <- data.frame(counts_mean_group2,counts_variance_group2)
+
+#Rhiz only - Rhiz
+counts_mean_group3 <- apply(genecounts[,c(11,12,13,14,15)], 1, mean)
+counts_variance_group3 <- apply(genecounts[,c(11,12,13,14,15)], 1, var)
+counts_df_group3 <- data.frame(counts_mean_group3,counts_variance_group3)
+
+
+# plot the distributions for each treatment group separately
+ggplot(counts_df_group1) +
+  geom_point(aes(x=counts_mean_group1, y=counts_variance_group1)) +
+  scale_y_log10(limits = c(1,1e9)) +
+  scale_x_log10(limits = c(1,1e9)) +
+  geom_abline(intercept = 0, slope = 1, color="red")+
+  ggtitle("Hn")
+
+ggplot(counts_df_group2) +
+  geom_point(aes(x=counts_mean_group2, y=counts_variance_group2)) +
+  scale_y_log10(limits = c(1,1e9)) +
+  scale_x_log10(limits = c(1,1e9)) +
+  geom_abline(intercept = 0, slope = 1, color="red")+
+  ggtitle("Low Nutrient")
+
+ggplot(counts_df_group3) +
+  geom_point(aes(x=counts_mean_group3, y=counts_variance_group3)) +
+  scale_y_log10(limits = c(1,1e9)) +
+  scale_x_log10(limits = c(1,1e9)) +
+  geom_abline(intercept = 0, slope = 1, color="red")+
+  ggtitle("Rhiz")
+
+```
+
+```{r DEG analysis}
+library(edgeR)
+
+
+
+alldata <- tibble(genes=genecounts$geneId,product=genecounts$Product,
+                      Hn13=genecounts$Hn_13.Lj_mapped.bam, Hn14=genecounts$Hn_14.Lj_mapped.bam, Hn15=genecounts$Hn_15.Lj_mapped.bam, Ln4=genecounts$Ln_4.Lj_mapped.bam, Ln7=genecounts$Ln_7.Lj_mapped.bam,Ln10=genecounts$Ln_10.Lj_mapped.bam, Ln16=genecounts$Ln_16.Lj_mapped.bam, Ln17=genecounts$Ln_17.Lj_mapped.bam, Rhiz3=genecounts$Rhiz_3.Lj_mapped.bam, Rhiz9=genecounts$Rhiz_9.Lj_mapped.bam, Rhiz12=genecounts$Rhiz_12.Lj_mapped.bam, Rhiz22=genecounts$Rhiz_22.Lj_mapped.bam, Rhiz23=genecounts$Rhiz_23.Lj_mapped.bam)
+
+```
+
+```{r Filtering Step}
+# apply count cutoff (drop anything less than 10 total counts)
+alldata_ten<-alldata[rowSums(alldata[,3:ncol(alldata)]) > 10,]
+#25926
+
+```
+
+```{r Design Matrix}
+#=====================================================================================================
+
+
+# set up grouping variable to use in design matrix
+
+Group <- factor(c("Hn","Hn","Hn",
+                  "Ln","Ln","Ln","Ln","Ln",
+                  "Rhiz","Rhiz","Rhiz","Rhiz","Rhiz"))
+
+# create a edgeR object
+# original new.data.obj used to generate DEGs from contrasts below:
+new.data.obj <- DGEList(counts=alldata_ten[,3:ncol(alldata_ten)], genes=alldata_ten[,1], group = Group)
+
+
+
+# calculate normalization factors & apply them to your DGE object
+new.data.obj <- calcNormFactors(new.data.obj)
+
+```
+
+```{r Writing out normalized counts}
+
+
+# Exporting normalized counts as its own file for Heike
+# no gene names, only values
+counts_norm_cpm <- cpm(new.data.obj)
+counts_norm_cpm_df <- as.data.frame(counts_norm_cpm, row.names = unlist(new.data.obj$genes))
+write.csv(counts_norm_cpm_df, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/genelvl_norm_cpm_Lotus.csv")
+counts_norm_cpm_df<- read.csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/genelvl_norm_cpm_Lotus.csv")
+head(counts_norm_cpm_df)
+counts_norm_cpm_df<- dplyr::rename(counts_norm_cpm_df, geneId=X )
+#colnames(counts_norm_cpm_df)[1]<-""
+#adding product (full gene names) to each comparison
+counts_norm_cpm_df$product<-alldata_ten$product[match(counts_norm_cpm_df$geneId,alldata_ten$genes)]
+# Remove the "X" prefix from column names
+# colnames(counts_norm_cpm_df) <- gsub("^X", "", colnames(counts_norm_cpm_df))
+write.csv(counts_norm_cpm_df, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/genelvl_norm_cpm_Lotus.csv", row.names = FALSE)
+
+
+```
+
+
+
+```{r}
+
+# trying an MDS plot (shows treatment clustering)
+#same as plotMDS(new.data.obj)
+plotMDS.DGEList(new.data.obj)
+
+
+# trying PCA plot (essentially an MDS plot but using the original data, not a similarity matrix)
+#this uses EVD
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 100)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 500)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 1000)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 10000)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 20000)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common", top = 30000)
+
+plotMDS.DGEList(new.data.obj, gene.selection="common")
+
+
+#use prcomp for PCA
+#new code
+counts_norm_cpm1 <- cpm(new.data.obj, log = TRUE)
+counts_norm_cpm_df1 <- as.data.frame(counts_norm_cpm1, row.names = unlist(new.data.obj$genes))
+#using prcop on the transposed data - data is transposed with t()
+pc_log_counts <- prcomp(t(counts_norm_cpm_df1))
+pc_importance <- t(summary(pc_log_counts)$importance) %>% as.data.frame()
+#I made a data frame with my sample information in it
+#reading it in
+library(readxl)
+Sample_info <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Rev_sample_info.xlsx")
+#column 1 is all my sample and column 2 and 3 have the treatment and round information - I am combining it with the PC data to label things in the graph 
+pc_counts_nice <- cbind(Sample_info, pc_log_counts$x)
+colnames(pc_counts_nice)[2:3] <- c("Treatment", "round")
+PCA_nice <- ggplot(pc_counts_nice, aes(x=PC1, y= -PC2, color=Treatment))+
+  geom_point(aes(color=Treatment), size = 3)+
+   xlab(paste("PC1", pc_importance$`Proportion of Variance`[1]*100, "% variance"))+
+  ylab(paste("PC2", pc_importance$`Proportion of Variance`[2]*100, "% variance"))+
+  labs(color = 'Treatment') +
+  theme_classic()+
+  theme(axis.text = element_text(size = 10),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size=10),
+        legend.key.size = unit(0.2, "cm"),
+        axis.title = element_text(size = 10)
+        )+
+  scale_color_manual(values = c("Hn" = "forestgreen", 
+                                "Ln" = "steelblue", 
+                                "Rhiz" = "hotpink" 
+                                ))
+
+saveRDS(PCA_nice, file ="~/Documents/GitHub/Lotus_n_Friends/PCA.rds")
+
+library(ggrepel)
+#with sample label
+ggplot(pc_counts_nice, aes(x=PC1, y= -PC2 ))+
+  geom_point()+
+  geom_label_repel(aes (label=Sample), position = position_jitter(), max.overlaps = 15)+
+   xlab(paste("PC1", pc_importance$`Proportion of Variance`[1]*100, "% variance"))+
+  ylab(paste("PC2", pc_importance$`Proportion of Variance`[2]*100, "% variance"))+
+  labs(color = 'Treatment')+
+  scale_color_discrete()+
+  guides(color = guide_legend(override.aes = list(shape = 15)))+
+  theme_classic()+
+  theme(axis.text = element_text(size = 12),
+        legend.text = element_text(size = 8), 
+        legend.key.size = unit(0.05, "cm"),
+        legend.title = element_text(size = 12))+
+  labs(title = "")
+
+
+
+```
+
+
+```{r}
+
+
+# check that the reference level is set to the intended group - control/reference should be the ****first*** in the list 
+levels(new.data.obj$samples$group)
+
+
+# relevel if necessary
+new.data.obj$samples$group <- relevel(new.data.obj$samples$group, ref="Ln")
+levels(new.data.obj$samples$group)
+# [1] "Hn"   "Ln"   "Rhiz"
+
+# create design matrix to use for DE tests
+# this uses the group matrix already created and levels without intercept 
+design <- model.matrix(~0+group, data=new.data.obj$samples)
+
+
+# removes 'group' from column names of design
+colnames(design) <- levels(new.data.obj$samples$group)
+
+design #look at design to check for correct labeling and order (control/reference should be first)
+#0 indicates that a sample is not part of that treatment group
+#1 indicates that a sample is part of that treatment group
+#####
+
+
+
+```
+
+```{r Looking at Distribution}
+
+#fit a regular GLM model for DE analysis and let edgeR descide what distribution to use
+#the next command will show overall dispersion 
+newdataobjectCommonDisp <- estimateGLMCommonDisp(new.data.obj, design, verbose=TRUE)
+# Disp = 0.08208 , BCV = 0.2865 
+
+
+#disperison trend for low and high counts
+newdataobjectTrendedDisp <- estimateGLMTrendedDisp(newdataobjectCommonDisp, design)
+#adds gene-wise dispersion estimates
+newdataobjectTagDisp <- estimateGLMTagwiseDisp(newdataobjectTrendedDisp, design)
+#plot the biological coefficient of variation / model fit 
+plotBCV(newdataobjectTagDisp)
+fit <- glmFit(newdataobjectTagDisp, design)
+
+```
+
+
+```{r Comparisons}
+# PERFORM LIKELIHOOD RATIO TESTS
+# make specific contrasts by specifying which treatments you want to compare 
+# specify treatments based on their order in the design matrix
+# assign reference (control treatment) '-1'
+# assign experimental treatment '1'
+
+
+RhizvsLn <- glmLRT(fit, contrast = c(-1, 0, 1))
+
+HnvsLn <- glmLRT(fit, contrast = c(-1, 1, 0))
+
+
+
+# View top DEGs for a particular contrast, ex
+topTags(RhizvsLn)
+topTags(HnvsLn)
+
+
+
+
+# if you want all results, both significant and NS, set "n=" to the total # genes you started with in the DGEList object  
+
+#added from Bri's code makes the full list of genes and log FCs into dataframes
+#change total number of genes to match the number in alldata_ten (can also View(new.data.obj))
+# updated for row number for alldata_ten
+
+RhizvsLn_df<-as.data.frame(topTags(RhizvsLn,n = 25926))
+HnvsLn_df<-as.data.frame(topTags(HnvsLn,n = 25926))
+
+
+
+
+#Adding back in product info 
+
+HnvsLn_df$product<-alldata_ten[match(HnvsLn_df$genes,alldata_ten$genes),]$product
+
+
+RhizvsLn_df$product<-alldata_ten[match(RhizvsLn_df$genes,alldata_ten$genes),]$product
+
+
+# #create .csv files to view DEGs in Excel
+write.csv(HnvsLn_df, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/HnvsLn_edgeR_genelvl_products_alldata10Filter.csv")
+
+write.csv(RhizvsLn_df, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/RhizvsLn_edgeR_genelvl_products_alldata10Filter.csv")
+
+
+
+# Add comparison columns
+HnvsLn_df <- HnvsLn_df %>% mutate(comparison = "HnvsLn")
+
+RhizvsLn_df <- RhizvsLn_df %>% mutate(comparison = "RhizvsLn")
+
+# Combine all data frames into one
+combined_df <- bind_rows(HnvsLn_df, RhizvsLn_df)
+
+
+write.csv(combined_df, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Combined_DEG_comaprisons.csv")
+
+```
+
+
+```{r making toptags object instead of making it into a data frame for saving}
+
+ttLnvsHn <- topTags(HnvsLn, n = 25926)
+
+ttRhizvsLn<- topTags(RhizvsLn, n = 25926)
+
+
+
+```
+
+```{r making stacked graphs for DEGs - reading in files}
+
+
+HnvsLn <- read.csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/HnvsLn_edgeR_genelvl_products_alldata10Filter.csv")
+
+
+RhizvsLn <- read.csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/RhizvsLn_edgeR_genelvl_products_alldata10Filter.csv")
+
+
+
+
+
+```
+
+
+```{r adding columns to keep track of the comparisons}
+
+library(tidyverse)
+
+HnvsLn <- HnvsLn %>%
+  add_column(Comparison = "HnvsLn") 
+
+
+RhizvsLn <- RhizvsLn %>%
+  add_column(Comparison = "RhizvsLn")
+
+
+
+
+DEGs_all_contrasts <- bind_rows(HnvsLn,RhizvsLn)
+
+
+
+```
+
+
+```{r Looking at FDR < .05 cutoffs}
+
+FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)
+Counts_05_FDRonly <- table(FDR05_DEGs$Comparison)
+print(Counts_05_FDRonly)
+
+FDR05_DEGs <- FDR05_DEGs[, -1]  # Remove the first column
+
+# HnvsLn RhizvsLn 
+#     4884     2919  
+
+#up and down regulation 
+
+up_FC_FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)%>%
+  filter((logFC) > 0)
+Counts_05_FDR_up_FC <- table(up_FC_FDR05_DEGs$Comparison)
+print(Counts_05_FDR_up_FC)
+
+ # HnvsLn RhizvsLn 
+ #    2475     1773 
+
+down_FC_FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)%>%
+  filter((logFC) < 0)
+Counts_05_FDR_down_FC <- table(down_FC_FDR05_DEGs$Comparison)
+print(Counts_05_FDR_down_FC)
+
+ # HnvsLn RhizvsLn 
+ #    2409     1146 
+
+
+FC2_FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)%>%
+  filter(abs(logFC) >2)
+Counts_05_FDR_FC2 <- table(FC2_FDR05_DEGs$Comparison)
+print(Counts_05_FDR_FC2)
+
+ # HnvsLn RhizvsLn 
+ #     958      740 
+
+
+write.csv(FC2_FDR05_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/FC2_FDR05_DEGs.csv")
+
+up_FC2_FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)%>%
+  filter((logFC) >2)
+up_Counts_05_FDR_FC2 <- table(up_FC2_FDR05_DEGs$Comparison)
+print(up_Counts_05_FDR_FC2)
+
+ # HnvsLn RhizvsLn 
+ #     574      676 
+
+write.csv(up_FC2_FDR05_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/up_FC2_FDR05_DEGs.csv")
+
+
+
+
+down_FC2_FDR05_DEGs <- DEGs_all_contrasts %>%
+  filter(FDR<0.05)%>%
+  filter((logFC) < -2)
+down_Counts_05_FDR_FC2 <- table(down_FC2_FDR05_DEGs$Comparison)
+print(down_Counts_05_FDR_FC2)
+
+write.csv(down_FC2_FDR05_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/down_FC2_FDR05_DEGs.csv")
+
+ # HnvsLn RhizvsLn 
+ #     384       64 
+
+
+
+```
+
+
+```{r making graphs for FDR.05 and FC >2 separetly}
+
+#using ggplot
+FDR05_DEGs$Comparison <-factor(FDR05_DEGs$Comparison, levels = c("HnvsLn", "RhizvsLn" ))
+custom_color <- "#6E7B8B"  # Set the same color for all bars
+
+Bar_allFDR_05 <- FDR05_DEGs %>%
+  filter(Comparison %in% c("HnvsLn", "RhizvsLn")) %>%
+  ggplot(aes(x = factor(Comparison, levels = c("HnvsLn",  "RhizvsLn")), fill = Comparison)) +
+  geom_bar(fill = custom_color) +  # Set bar color
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5, color = "black", size = 5) + 
+  theme_classic(base_size = 15) +   # Use classic theme
+  ylim(0, 6000) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center and bold the title
+  ) +
+  labs(
+    title = "DEGs FDR <.05",
+    x = "Comparison",
+    y = "DEGs FDR<0.05"
+  ) +
+  theme(panel.grid = element_blank())
+
+print(Bar_allFDR_05)
+
+#without a title and changing the y-axis label
+
+Bar_allFDR_051 <- FDR05_DEGs %>%
+  filter(Comparison %in% c("HnvsLn", "RhizvsLn")) %>%
+  ggplot(aes(x = factor(Comparison, levels = c("HnvsLn", "RhizvsLn")), fill = Comparison)) +
+  geom_bar(fill = custom_color) +  # Set bar color
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5, color = "black", size = 5) + 
+  theme_classic(base_size = 15) +   # Use classic theme
+  ylim(0, 6000) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(
+    x = "Comparison",
+    y = "number of DEGs FDR<0.05"
+  ) +
+  theme(panel.grid = element_blank())
+
+print(Bar_allFDR_051)
+
+
+
+
+
+FC2_FDR05_DEGs$Comparison <-factor(FC2_FDR05_DEGs$Comparison, levels = c("HnvsLn", "RhizvsLn" ))
+
+Bar_allFDR_05_FC <- FC2_FDR05_DEGs %>%
+  filter(Comparison %in% c("HnvsLn", "RhizvsLn")) %>%
+  ggplot(aes(x = factor(Comparison, levels = c("HnvsLn", "RhizvsLn")), fill = Comparison)) +
+  geom_bar(fill = custom_color) +  # Set bar color
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = 0.5, color = "white", size=9) + 
+  theme_classic(base_size = 15) +   # Use classic theme
+  ylim(0, 1000) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center and bold the title
+  ) +
+  labs(
+    title = "DEGs FDR <.05 & FC>2",
+    x = "Comparison",
+    y = "DEGs FDR<0.05"
+  ) +
+  theme(panel.grid = element_blank())
+
+
+# Save as JPEG instead of PDF
+# ggsave(
+#   filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/ALL_DEGs_FDR05_FC.jpeg",
+#   plot = Bar_allFDR_05_FC,
+#   device = "jpeg",  # Change device to jpeg
+#   path = NULL,
+#   scale = 1,
+#   width = 170,  # Width in mm
+#   height = 170,  # Height in mm
+#   units = "mm",
+#   dpi = 300,
+#   limitsize = TRUE,
+#   bg = NULL
+# )
+
+```
+
+
+
+
+```{r making grouped graphs to look at up and down DEGs}
+
+Sum_data_05_up <- up_FC_FDR05_DEGs %>%
+  dplyr::count(Comparison)
+names(Sum_data_05_up)<- c("Comparison", "up")
+
+Sum_data_05_down <- down_FC_FDR05_DEGs %>%
+  dplyr::count(Comparison)
+names(Sum_data_05_down)<- c("Comparison", "down")
+
+Merged_data_updown <- full_join(Sum_data_05_up, Sum_data_05_down, by = "Comparison")
+
+Merged_data_updown_long <- pivot_longer(Merged_data_updown, cols = c(up, down),
+                                   names_to = "Regulation_direction", values_to = "Count")
+
+Merged_data_updown_long$Comparison <- factor(Merged_data_updown_long$Comparison, 
+                                             levels = c("HnvsLn", "RhizvsLn"))
+
+custom_colors_1 = c("up" = "#FF4040", "down" = "#0000FF")
+
+
+ggplot(Merged_data_updown_long, aes(x = Comparison, y = Count, fill = `Regulation_direction`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "FDR<.05:Up and Down DEGs", x = "Comparison", y = "Number of DEGs", fill = "Regulation Direction") +
+  scale_fill_manual(values= custom_colors_1) +
+  theme_classic() +
+  scale_y_continuous(limits = c(0, 3500), breaks = seq(0, 3500, by = 500)) +  # Adjust 'by' value for desired spacing
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20), # Center, bold, and enlarge title
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+# Modify Count values for downregulated genes
+Merged_data_updown_long <- Merged_data_updown_long %>%
+  mutate(Count = ifelse(Regulation_direction == "down", -Count, Count),
+         Regulation_direction = factor(Regulation_direction, levels = c("up", "down")))  # Reorder legend
+
+# Update ggplot code
+FDR05_DEGs <- ggplot(Merged_data_updown_long, aes(x = Comparison, y = Count, fill = Regulation_direction)) +
+  geom_bar(stat = "identity", position = "identity") +
+  geom_text(aes(label = abs(Count)), 
+            vjust = ifelse(Merged_data_updown_long$Regulation_direction == "down", 1.2, -0.2), 
+            size = 4, color = "black") +  # Label size and color
+  labs(title = "FDR<.05: Up and Down DEGs", x = "Comparison", y = "Number of DEGs", fill = "Regulation Direction") +
+  scale_fill_manual(values = custom_colors_1) +
+  theme_classic() +
+  scale_y_continuous(limits = c(-3500, 3500), breaks = seq(-3500, 3500, by = 500), 
+                     labels = abs) +  # Use abs() to show positive labels on both sides of the y-axis
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20),
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+# saveRDS(FDR05_DEGs, file = "~/Documents/GitHub/Lotus_n_Friends/FDR05_DEGs.rds" )
+
+
+
+
+```
+
+
+```{r making grouped bar graphs for logfc>2 and log<-2}
+
+sum_data_05FC_up <- up_FC2_FDR05_DEGs %>%
+  dplyr::count(Comparison)
+names(sum_data_05FC_up) <- c("Comparison", "up")
+
+
+sum_data_05FC_down <- down_FC2_FDR05_DEGs %>%
+  filter(FDR<.05) %>%
+  filter((logFC) < -2)%>%
+  dplyr::count(Comparison)
+names(sum_data_05FC_down) <- c("Comparison", "down")
+
+Merged_data_FC_updown <- full_join(sum_data_05FC_up, sum_data_05FC_down, by = "Comparison")
+
+Merged_data_FC_updown_long <- pivot_longer(Merged_data_FC_updown, cols = c(up, down),
+                                   names_to = "Regulation_direction", values_to = "Count")
+
+Merged_data_FC_updown_long$Comparison <- factor(Merged_data_FC_updown_long$Comparison, 
+                                             levels = c("HnvsLn", "RhizvsLn"))
+
+custom_colors_3 = c("up" = "#FF4040", "down" = "#0000FF")
+
+
+ggplot(Merged_data_FC_updown_long, aes(x = Comparison, y = Count, fill = `Regulation_direction`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "FDR<.05 logFC>2: Up and Down DEGs", 
+       x = "Comparison Groups",    # Change x-axis title here
+       y = "Number of DEGs FDR<.05 and logFC>2",       # Change y-axis title here
+       fill = "Regulation Direction") +
+  scale_fill_manual(values = custom_colors_3, 
+                    labels = c("down" = "down(logFC<-2)", "up" = "up(logFC>2)")) +
+  theme_classic() +
+  scale_y_continuous(limits = c(0, 800), breaks = seq(0, 800, by = 200)) +  # Adjust 'by' value for desired spacing
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 20), # Center, bold, and enlarge title
+    axis.title = element_text(face = "bold"),  # Bold axis titles
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+# Modify Count values for downregulated genes
+Merged_data_FC_updown_long <- Merged_data_FC_updown_long %>%
+  mutate(Count = ifelse(Regulation_direction == "down", -Count, Count),
+         Regulation_direction = factor(Regulation_direction, levels = c("up", "down")))  # Reorder legend
+
+# Update ggplot code
+FDR05_DEGs_FC2 <- ggplot(Merged_data_FC_updown_long, aes(x = Comparison, y = Count, fill = Regulation_direction)) +
+  geom_bar(stat = "identity", position = "identity") +
+  geom_text(aes(label = abs(Count)), 
+            vjust = ifelse(Merged_data_FC_updown_long$Regulation_direction == "down", 1.2, -0.2), 
+            size = 3, color = "black") +  # Label size and color
+  labs(title = "FDR<.05 & FC2: Up and Down DEGs", x = "Comparison", y = "DEGs", fill = "Direction") +
+  scale_fill_manual(values = custom_colors_1) +
+  theme_classic() +
+  scale_y_continuous(limits = c(-800, 800), breaks = seq(-800, 800, by = 200), 
+                     labels = abs) +  # Use abs() to show positive labels on both sides of the y-axis
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_blank (),
+    axis.title.y = element_text(size = 10),
+    axis.title.x = element_text(size = 10, margin = margin(t = 14)),
+    axis.text.x = element_text(hjust = 0.5, size = 8),
+    axis.text.y = element_text(size = 10),
+    legend.position = "bottom", margin = margin(t = 6), 
+    legend.title = element_text(size=10),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.5, "lines"))
+
+saveRDS(FDR05_DEGs_FC2, file = "~/Documents/GitHub/Lotus_n_Friends/FDR05_DEGs_FC2.rds" )
+
+
+```
+
+```{r Looking at FDR < .005 cutoffs}
+
+# FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)
+# Counts_005_FDRonly <- table(FDR005_DEGs$Comparison)
+# print(Counts_005_FDRonly)
+# 
+# FDR005_DEGs <- FDR005_DEGs[, -1]  # Remove the first column
+# 
+# 
+# # LnvsHn RhizvsHn RhizvsLn 
+# #     2628     1911     1732   
+# 
+# #up and down regulation 
+# 
+# up_FC_FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)%>%
+#   filter((logFC) > 0)
+# Counts_005_FDR_up_FC <- table(up_FC_FDR005_DEGs$Comparison)
+# print(Counts_005_FDR_up_FC)
+# 
+#  # LnvsHn RhizvsHn RhizvsLn 
+#  #    1265     1269     1203  
+# 
+# down_FC_FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)%>%
+#   filter((logFC) < 0)
+# Counts_005_FDR_down_FC <- table(down_FC_FDR005_DEGs$Comparison)
+# print(Counts_005_FDR_down_FC)
+# 
+# # LnvsHn RhizvsHn RhizvsLn 
+# #     1363      642      529
+# 
+# 
+# FC2_FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)%>%
+#   filter(abs(logFC) >2)
+# Counts_005_FDR_FC2 <- table(FC2_FDR005_DEGs$Comparison)
+# print(Counts_005_FDR_FC2)
+# 
+#   # LnvsHn RhizvsHn RhizvsLn 
+#   #    750      752      616
+# 
+# FC2_FDR005_DEGs <- FC2_FDR005_DEGs[, -1]
+# 
+# 
+# write.csv(FC2_FDR005_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/FC2_FDR005_DEGs.csv")
+# 
+# up_FC2_FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)%>%
+#   filter((logFC) >2)
+# up_Counts_005_FDR_FC2 <- table(up_FC2_FDR005_DEGs$Comparison)
+# print(up_Counts_005_FDR_FC2)
+# 
+# # LnvsHn RhizvsHn RhizvsLn 
+# #      303      606      581
+# 
+# write.csv(up_FC2_FDR005_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/up_FC2_FDR005_DEGs.csv")
+# 
+#  
+# down_FC2_FDR005_DEGs <- DEGs_all_contrasts %>%
+#   filter(FDR<0.005)%>%
+#   filter((logFC) < -2)
+# down_Counts_005_FDR_FC2 <- table(down_FC2_FDR005_DEGs$Comparison)
+# print(down_Counts_005_FDR_FC2)
+# 
+# write.csv(down_FC2_FDR005_DEGs, file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/down_FC2_FDR005_DEGs.csv")
+# 
+#  # LnvsHn RhizvsHn RhizvsLn 
+#  #     447      146       35 
+
+
+
+```
+
+
+```{r trying with .005}
+
+# sum_data_005FC_up <- up_FC2_FDR005_DEGs %>%
+#   filter(FDR<.005) %>%
+#   filter((logFC) > 2)%>%
+#   count(Comparison)
+# names(sum_data_005FC_up) <- c("Comparison", "up")
+# 
+# 
+# sum_data_005FC_down <- down_FC2_FDR005_DEGs %>%
+#   filter(FDR<.005) %>%
+#   filter((logFC) < -2)%>%
+#   count(Comparison)
+# names(sum_data_005FC_down) <- c("Comparison", "down")
+# 
+# Merged2_data_FC_updown <- full_join(sum_data_005FC_up, sum_data_005FC_down, by = "Comparison")
+# 
+# Merged2_data_FC_updown_long <- pivot_longer(Merged2_data_FC_updown, cols = c(up, down),
+#                                    names_to = "Regulation_direction", values_to = "Count")
+# 
+# Merged2_data_FC_updown_long$Comparison <- factor(Merged2_data_FC_updown_long$Comparison, 
+#                                              levels = c("LnvsHn", "RhizvsHn", "RhizvsLn"))
+# 
+# custom_colors_3 = c("up" = "#FF4040", "down" = "#0000FF")
+# 
+# 
+# ggplot(Merged2_data_FC_updown_long, aes(x = Comparison, y = Count, fill = `Regulation_direction`)) +
+#   geom_bar(stat = "identity", position = "dodge") +
+#   labs(title = "FDR<.005 logFC>2: Up and Down DEGs", 
+#        x = "Comparison Groups",    # Change x-axis title here
+#        y = "Number of DEGs FDR<.005 and logFC>2",       # Change y-axis title here
+#        fill = "Regulation Direction") +
+#   scale_fill_manual(values = custom_colors_3, 
+#                     labels = c("down" = "down(logFC<-2)", "up" = "up(logFC>2)")) +
+#   theme_classic() +
+#   scale_y_continuous(limits = c(0, 800), breaks = seq(0, 800, by = 200)) +  # Adjust 'by' value for desired spacing
+#   theme(
+#     panel.grid = element_blank(),
+#     plot.title = element_text(hjust = 0.5, face = "bold", size = 20), # Center, bold, and enlarge title
+#     axis.title = element_text(face = "bold"),  # Bold axis titles
+#     axis.text.x = element_text(angle = 30, hjust = 1)
+#   )
+# 
+# # Modify Count values for downregulated genes
+# Merged2_data_FC_updown_long <- Merged2_data_FC_updown_long %>%
+#   mutate(Count = ifelse(Regulation_direction == "down", -Count, Count),
+#          Regulation_direction = factor(Regulation_direction, levels = c("up", "down")))  # Reorder legend
+# 
+# # Update ggplot code
+# FDR005_DEGs_FC2 <- ggplot(Merged2_data_FC_updown_long, aes(x = Comparison, y = Count, fill = Regulation_direction)) +
+#   geom_bar(stat = "identity", position = "identity") +
+#   geom_text(aes(label = abs(Count)), 
+#             vjust = ifelse(Merged2_data_FC_updown_long$Regulation_direction == "down", 1.2, -0.2), 
+#             size = 4, color = "black") +  # Label size and color
+#   labs(title = "FDR<.005 & FC2: Up and Down DEGs", x = "Comparison", y = "Number of DEGs", fill = "Regulation Direction") +
+#   scale_fill_manual(values = custom_colors_1) +
+#   theme_classic() +
+#   scale_y_continuous(limits = c(-800, 800), breaks = seq(-800, 800, by = 200), 
+#                      labels = abs) +  # Use abs() to show positive labels on both sides of the y-axis
+#   theme(
+#     panel.grid = element_blank(),
+#     plot.title = element_text(hjust = 0.5, face = "bold", size = 20),
+#     axis.title = element_text(face = "bold", size = 14),
+#     axis.text.x = element_text(angle = 30, hjust = 1, size = 12),
+#     axis.text.y = element_text(size = 12)
+#   )
+# 
+# 
+# saveRDS(FDR005_DEGs_FC2, file = "~/Documents/GitHub/Lotus_n_FriendsFDR005_DEGs_FC2.rds")
+
+
+
+```

@@ -1,0 +1,42 @@
+---
+title: "MiRNA_Pre-Processing"
+author: "Asa Budnick"
+date: "2024-08-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r ciri-vis sequence import, offset, and export}
+#BiocManager::install("ShortRead")
+
+library(ShortRead)
+library(ggplot2)
+library(stringr)
+
+#Load in combined reads - these were made from concatenating all of the samples stout.list_circle.fa files from both the combined and shallow only set of ciri-vis results
+Combined_circs<-readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/all_sample_circ_fasta.fa")
+
+ID_data_Frame<-as.data.frame(Combined_circs@id)
+#ID_data_Frame$x<-sub(" .*", "", ID_data_Frame$x)
+reads_data_frame<-as.data.frame(Combined_circs@sread)
+Combined_circs_DF<-cbind(ID_data_Frame,reads_data_frame)
+
+colnames(Combined_circs_DF)<-c("read_id","sequence")
+#offset first 40nt to the end
+offset_seq<-paste(substr(Combined_circs_DF$sequence,start = 41, stop = nchar(Combined_circs_DF$sequence)),substr(Combined_circs_DF$sequence,start = 1, stop = 40))
+Offset_seqs_DF<-cbind.data.frame(Combined_circs_DF$read_id,offset_seq)
+colnames(Offset_seqs_DF)<-c("read_id","sequence")
+Offset_seqs_DF$read_id<-gsub(x=Offset_seqs_DF$read_id, pattern = " length", " OFFSET length")
+
+#merge the original with the offset and write as fasta
+Seqs_merged_DF<-rbind(Combined_circs_DF,Offset_seqs_DF)
+#export commensal
+combined_mod_fasta <- character(nrow(Seqs_merged_DF) * 2)
+combined_mod_fasta[c(TRUE, FALSE)] <- paste0(">", Seqs_merged_DF$read_id)
+combined_mod_fasta[c(FALSE, TRUE)] <- Seqs_merged_DF$sequence
+writeLines(combined_mod_fasta, "~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218LnF_Circs_with_offset.fasta")
+```

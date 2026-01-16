@@ -1,0 +1,1224 @@
+---
+title: "revision_circ_analysis"
+author: "Delecia U"
+date: "2025-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(openxlsx)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(tidyverse)
+library(ggupset)
+library(ggiraph)
+
+```
+
+```{r Reading in revised LnF circs}
+
+#only has AM samples removed 
+LnF_circs <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218AB_annotated_Full_clustered_metadata_circRNAs.xlsx")
+
+```
+
+
+
+
+```{r}
+
+#hardcoding patterns
+organellar_pattern <- "(mito|chloro)"
+intergenic_flag <- "intergenic_region"
+
+#filtering out CIRI-vis from main datafram
+LnF_no_CIRIVIS <- LnF_circs %>%
+  filter(Analysis != "CIRI-vis")
+
+LnF_CIRIVIS <- LnF_circs %>%
+  filter(Analysis == "CIRI-vis") %>%
+  mutate(gene_id = as.character(gene_id))
+
+#checking how many have gene_ids and how many do not
+geneid_sanity <- LnF_no_CIRIVIS %>%
+  mutate(
+    gene_id_status = case_when(
+      is.na(gene_id) | gene_id == "" | gene_id == "n/a" ~ "Missing gene_id",
+      TRUE ~ "Has gene_id"
+    )
+  ) %>%
+  dplyr::count(gene_id_status)
+
+geneid_sanity
+
+#checking on what type are missing gene ids
+missing_geneid_types <- LnF_no_CIRIVIS %>%
+  mutate(gene_id = as.character(gene_id)) %>%
+  filter(
+    is.na(gene_id) | gene_id == "" | gene_id == "n/a"
+  ) %>%
+  dplyr::count(circRNA_type, sort = TRUE)
+
+missing_geneid_types
+
+
+#checking to see how many do not have gene_ids 
+CIRIVIS_geneid_sanity <- LnF_CIRIVIS %>%
+  mutate(
+    gene_id_status = ifelse(
+      is.na(gene_id) | gene_id == "" | gene_id == "n/a",
+      "Missing gene_id",
+      "Has gene_id"
+    )
+  ) %>%
+  dplyr::count(gene_id_status)
+
+CIRIVIS_geneid_sanity
+
+write.xlsx(LnF_CIRIVIS, file = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/LnF_CIRIVIS_only.xlsx")
+
+
+```
+
+```{r combining excluded circs and creating a df}
+
+
+LnF_no_CIRIVIS <- LnF_no_CIRIVIS %>%
+  mutate(
+    circ_class = case_when(
+      str_detect(New_circ_ID, organellar_pattern) ~ "Organellar",
+      circRNA_type == intergenic_flag             ~ "Intergenic",
+      TRUE                                        ~ "Genic"
+    )
+  )
+
+table(LnF_no_CIRIVIS$circ_class)
+
+LnF_annotated <- LnF_no_CIRIVIS %>%
+  mutate(
+    circ_class = case_when(
+      str_detect(New_circ_ID, organellar_pattern) ~ "Organellar",
+      circRNA_type == "intergenic_region" ~ "Intergenic",
+      TRUE ~ "Genic"
+    )
+  )
+
+table(LnF_annotated$circ_class)
+
+# organellar_df <- LnF_annotated %>%
+#   filter(circ_class == "Organellar")
+# 
+# intergenic_df <- LnF_annotated %>%
+#   filter(circ_class == "Intergenic")
+# 
+# LnF_final_clean <- LnF_annotated %>%
+#   filter(circ_class == "Genic") %>%
+#   filter(
+#     !is.na(gene_id),
+#     gene_id != "",
+#     gene_id != "n/a"
+#   )
+# 
+# length(intersect(
+#   intergenic_df$New_circ_ID,
+#   organellar_df$New_circ_ID
+# ))
+
+```
+
+
+
+
+```{r intergenic}
+
+intergenic_df <- LnF_no_CIRIVIS %>%
+  filter(
+    Analysis == "CIRI2",
+    circ_class == "Intergenic"
+  )
+
+intergenic_df <- intergenic_df %>%
+  mutate(Treatment = recode(Treatment,
+                            "Rhiz" = "Rhizobia"))
+
+intergenic_stats <- intergenic_df %>%
+  group_by(Treatment) %>%
+  summarize(
+    unique_circs = n_distinct(New_circ_ID),
+    .groups = "drop"
+  )
+
+
+
+intergenic_stats$Treatment <- factor(
+  intergenic_stats$Treatment,
+  levels = c("High Nutrient", "Low Nutrient", "Rhizobia")  # add \n for line break
+)
+
+
+treatment_colors <- c("High Nutrient" = "forestgreen" , "Low Nutrient" = "steelblue", "Rhizobia" = "hotpink")
+  
+
+intergenic_circs <- ggplot(intergenic_stats, aes(x = Treatment, y = unique_circs)) +
+  geom_bar(stat = "identity", position = "dodge", fill = treatment_colors) +  # Set bar color
+  geom_text(aes(label = unique_circs), 
+            position = position_dodge(width = 0.9),  # Align labels with dodged bars
+            vjust = -0.2, size = 3, color = "black") +  # Adjust label size and position
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2)))+
+  labs(
+       x = "Treatment",
+       y = "Unique\nIntergenic CircRNAs") +
+  # scale_fill_manual(values = treatment_colors) +
+  theme_classic() +
+  theme(
+    panel.grid = element_blank(), 
+    legend.position = "none",  # Hide legend if only one circRNA_type
+    axis.text = element_text(size = 8),
+    axis.text.x = element_text(size = 8),# Adjust axis text size
+    axis.title.y = element_text(size = 10), 
+    axis.title.x = element_text(size = 10, margin = margin(t = 10))
+  )
+
+
+print(intergenic_circs)
+
+
+```
+
+
+
+```{r plastids}
+
+organellar_df <- LnF_no_CIRIVIS %>%
+  filter(circ_class == "Organellar") %>%
+  mutate(
+    organelle = case_when(
+      str_detect(New_circ_ID, "chloro") ~ "Chloroplast",
+      str_detect(New_circ_ID, "mito")   ~ "Mitochondrial"
+    )
+  )
+
+organellar_df <- organellar_df %>%
+  mutate(Treatment = recode(Treatment,
+                            "Rhiz" = "Rhizobia"))
+
+
+organellar_stats <- organellar_df %>%
+  group_by(Treatment, organelle) %>%
+  summarize(
+    unique_circs = n_distinct(New_circ_ID),
+    .groups = "drop"
+  )
+
+organellar_stats$Treatment <- factor(
+  organellar_stats$Treatment,
+  levels = c("High Nutrient", "Low Nutrient", "Rhizobia"),
+  labels = c("High Nutrient", "Low Nutrient", "Rhizobia")
+)
+
+organellar_stats$Treatment <- droplevels(organellar_stats$Treatment)
+
+organellar_plot <- ggplot(
+  organellar_stats,
+  aes(x = Treatment, y = unique_circs, fill = organelle)
+) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(
+    aes(label = unique_circs),
+    position = position_dodge(width = 0.9),
+    vjust = -0.5,
+    size = 3,
+    color = "black"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x = "Treatment",
+    y = "Unique\nOrganellar CircRNAs",
+    fill = "Type"
+  ) +
+  theme_classic() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 10),
+    axis.text = element_text(size = 8),
+    axis.title.y = element_text(size = 10),
+    axis.title.x = element_text(size = 10, margin = margin(t = 10))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Chloroplast" = "#009E73",
+      "Mitochondrial" = "#E69F00"
+    )
+  )
+
+print(organellar_plot)
+
+
+
+
+```
+```{r}
+
+
+excluded_circs <- bind_rows(intergenic_df, organellar_df)
+
+length(intersect(intergenic_df$New_circ_ID, organellar_df$New_circ_ID))
+
+write.xlsx(
+  excluded_circs,
+  file = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/excluded_circRNAs.xlsx",
+  overwrite = TRUE
+)
+
+# Make a vector of circRNAs to exclude (intergenic + plastid/mito)
+excluded_ids <- excluded_circs$New_circ_ID
+
+# Filter out these circRNAs from your main dataframe
+LnF_filtered <- LnF_no_CIRIVIS %>%
+  filter(!New_circ_ID %in% excluded_ids)
+
+
+```
+
+
+
+```{r}
+
+library(scales)
+
+
+unique_circRNA_lengths <- LnF_filtered %>%
+  mutate(length = circRNA_end - circRNA_start) %>%
+  group_by(New_circ_ID) %>%
+  summarize(length = mean(length, na.rm = TRUE), .groups = "drop")
+
+violin_length_plot <- ggplot(unique_circRNA_lengths, aes(x = "", y = length)) +
+  geom_violin(fill = "lightblue", color = "black", alpha = 0.7, scale = "width") +
+  geom_boxplot(width = 0.1, fill = "gray70", outlier.shape = NA) +  # Add boxplot inside violin
+  scale_y_log10(
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  labs(
+    x = "",
+    y = "CircRNA Length (bp, log10 scale)"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 9),
+    axis.title.y = element_text(size = 10, margin = margin(r = 0)),
+    axis.title.x = element_text(size = 10)
+  )
+
+violin_length_plot
+
+
+
+unique_circRNA_lengths2 <- LnF_filtered %>%
+  mutate(length = circRNA_end - circRNA_start) %>%
+  group_by(New_circ_ID, Treatment) %>%
+  summarize(length = mean(length, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Treatment = recode(Treatment,
+                            "Rhiz" = "Rhizobia"))  # optional relabel
+
+# Factor treatments for ordering
+unique_circRNA_lengths2$Treatment <- factor(
+  unique_circRNA_lengths2$Treatment,
+  levels = c("High Nutrient", "Low Nutrient", "Rhizobia")
+)
+
+# Violin plot by treatment
+violin_by_treatment <- ggplot(unique_circRNA_lengths2, aes(x = Treatment, y = length, fill = Treatment)) +
+  geom_violin(scale = "width", alpha = 0.7, color = "black") +
+  geom_boxplot(width = 0.1, fill = "gray70", outlier.shape = NA) +  # boxplot inside violin
+  scale_y_log10(
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  scale_fill_manual(values = c("High Nutrient" = "forestgreen" , "Low Nutrient" = "steelblue", "Rhizobia" = "hotpink")) +
+  labs(
+    x = "Treatment",
+    y = "CircRNA Length\n(bp, log10 scale)"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text.x = element_text(size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 10),
+    legend.position = "none"
+  )
+
+violin_by_treatment
+
+
+
+
+# Plot
+length_total_plot <- ggplot(unique_circRNA_lengths, aes(y = length)) +
+  geom_boxplot(fill = "gray70") +
+  scale_y_log10(
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  labs(
+    y = "CircRNA Length\n(log10 scale)",
+    x = "All circRNAs"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.title.y = element_text(size = 10, margin = margin(r = -1.5)),
+    axis.title.x = element_text(size = 10),
+    axis.text.y = element_text(size = 9),
+    axis.text.x = element_blank()  # no x-axis text since it's all combined
+  )
+
+length_total_plot
+
+
+
+```
+
+
+```{r}
+
+BSJ_total <- LnF_filtered %>%
+  mutate(read_number = coalesce(X.junction_reads, readNumber)) %>%  # pick first non-NA value
+  filter(!is.na(read_number) & read_number > 0)  # keep all positive reads
+
+# Define bins
+bins <- c(seq(1, 81, by = 20), Inf) # 1-20, 21-40, 41-60, 61-80, >81
+bin_labels <- c(paste(seq(1, 60, by = 20), seq(20, 81, by = 20) - 1, sep = "-"), ">81")
+
+# Assign bin labels
+BSJ_total <- BSJ_total %>%
+  mutate(
+    read_number_bin = cut(read_number,
+                          breaks = bins,
+                          include.lowest = TRUE,
+                          right = FALSE,
+                          labels = bin_labels)
+  )
+
+# Count circRNAs per bin (ignoring Treatment)
+bin_counts <- BSJ_total %>%
+  group_by(read_number_bin) %>%
+  summarize(unique_count = n_distinct(New_circ_ID), .groups = 'drop')
+
+# Plot
+BSJ_total_plot <- ggplot(bin_counts, aes(x = read_number_bin, y = unique_count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = unique_count),
+            vjust = -0.5,
+            size = 3,
+            angle = 30) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(x = "BSJ Reads", y = "CircRNAs") +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 10)
+  )
+
+BSJ_total_plot
+
+
+BSJ_total <- LnF_filtered %>%
+  mutate(read_number = coalesce(X.junction_reads, readNumber)) %>%
+  filter(!is.na(read_number) & read_number > 0) %>%
+  group_by(New_circ_ID) %>%
+  summarize(read_number = max(read_number), .groups = "drop")  # or mean() if you prefer
+
+# Then assign bins as before
+bins <- c(seq(1, 81, by = 20), Inf)
+bin_labels <- c(paste(seq(1, 60, by = 20), seq(20, 81, by = 20) - 1, sep = "-"), ">81")
+
+BSJ_total <- BSJ_total %>%
+  mutate(
+    read_number_bin = cut(read_number,
+                          breaks = bins,
+                          include.lowest = TRUE,
+                          right = FALSE,
+                          labels = bin_labels)
+  )
+
+bin_counts <- BSJ_total %>%
+  group_by(read_number_bin) %>%
+  summarize(unique_count = n(), .groups = 'drop')  # now each circRNA appears once
+
+
+BSJ_total_plot2 <- ggplot(bin_counts, aes(x = read_number_bin, y = unique_count)) +
+  geom_bar(stat = "identity", fill = "#9196C8") +
+  geom_text(aes(label = unique_count),
+            vjust = -0.5,
+            size = 3) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(x = "BSJ Reads", y = "Unique CircRNAs") +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text = element_text(size = 8),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10, margin = margin(r = 1))
+  )
+
+BSJ_total_plot2
+
+
+
+```
+
+
+```{r circ-types}
+
+# Filter out unwanted circRNAs directly
+circRNA_data_mutate_types <- LnF_no_CIRIVIS %>%
+  filter(  # Exclude CIRI-vis
+         !str_detect(New_circ_ID, organellar_pattern)) %>%  # Exclude chloro and mito circRNAs
+  mutate(circRNA_type = case_when(
+    circRNA_type %in% c("ciRNA", "intron") ~ "intronic",
+    circRNA_type %in% c("circRNA", "exon") ~ "exonic",
+    circRNA_type == "intergenic_region" ~ "intergenic",   
+    TRUE ~ circRNA_type
+  ),
+    circRNA_type = factor(circRNA_type,
+                          levels = c("exonic", "intergenic", "intronic"))  # <-- ordering here
+  )
+
+# Compute total circRNA stats
+total_circRNA_stats <- circRNA_data_mutate_types %>%
+  group_by(Analysis, circRNA_type) %>%
+  summarize(total_count = n(), .groups = 'drop') %>%
+  group_by(Analysis) %>%
+  mutate(total_proportion = total_count / sum(total_count))
+
+# Define custom colors
+custom_colors <- c(
+  "exonic" = "#00E5EE",
+  "intronic" = "#00CD66",
+  "intergenic" = "#ff7f0e"
+)
+
+# Create plot
+proportion <- ggplot(total_circRNA_stats, aes(x = Analysis, y = total_proportion, fill = circRNA_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Detection Tool",
+    y = "Proportion",
+    fill = "Type"
+  ) +
+  scale_y_continuous(labels = scales::label_number()) +
+  scale_fill_manual(values = custom_colors) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 10, margin = margin(r = 2))
+  )
+
+
+
+
+```
+
+
+
+
+```{r}
+
+library(ggVennDiagram)
+
+circ_lists <- LnF_filtered %>%
+  group_by(Analysis) %>%
+  summarize(circs = list(unique(New_circ_ID))) %>%
+  deframe()  # converts to named list
+
+
+names(circ_lists) <- c("CIRI2", "CLEAR")
+
+
+
+circ_comp <- ggvenn(
+  circ_lists,
+  fill_color = c("#CC79A7", "#56B4E9"),
+  stroke_size = 0.5,
+  set_name_size = 3,   # size of the set names
+  text_size = 3,       # size of numbers inside circles
+  label_sep = -2
+) +
+  ggtitle("CircRNAs") +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5)  # centers the title
+  ) # main plot title
+ 
+
+circ_comp
+
+```
+
+
+```{r}
+
+gene_lists <- LnF_filtered %>%
+  filter(!is.na(gene_id), gene_id != "", gene_id != "n/a") %>%  # only valid gene_ids
+  group_by(Analysis) %>%
+  summarize(genes = list(unique(gene_id))) %>%
+  deframe()  # convert to named list
+
+
+
+
+names(gene_lists) <- c(" CIRI2", "CLEAR")
+
+
+gene_comp <- ggvenn(
+  gene_lists,
+  fill_color = c("#CC79A7", "#56B4E9"),
+  stroke_size = 0.5,
+  set_name_size = 3,   # size of the set names
+  text_size = 3,       # size of numbers inside circles
+  label_sep = -2
+) +
+  ggtitle("Gene IDs") +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5)  # centers the title
+  ) # main plot title
+ 
+
+
+gene_comp
+
+
+```
+
+
+#still need to work on this
+```{r making supplemental figure}
+
+
+circ_main_top <-plot_grid(
+  circ_comp, gene_comp,
+  labels = c("A", "B"),
+  nrow = 1,              # side-by-side
+  align = "hv",          # align horizontally and vertically
+  rel_widths = c(1, 1) # optional: adjust plot widths if needed
+)
+
+
+BSJ_total_plot2 <- BSJ_total_plot2 + theme(
+  axis.title.x = element_text(margin = margin(t = -1)))
+
+
+
+circ_main_middle <- plot_grid(
+  BSJ_total_plot2, violin_by_treatment,
+  labels = c("C","D"),
+  nrow = 1,
+  align = "hv",
+  rel_widths = c(1, 1)
+)
+
+
+circ_main_2ndmiddle <- plot_grid(
+  proportion,
+  intergenic_circs,
+  labels = c("E", "F"),
+  nrow = 1,
+  align = "hv",
+  axis = "tblr",   # <- important
+  rel_widths = c(1, 1)
+)
+
+
+empty_plot2 <- ggplot() + theme_void()
+
+circ_main_bottom <-plot_grid(
+  organellar_plot, empty_plot2,
+  labels = c("G", ""),
+  nrow = 1,
+  align = "hv",
+  rel_widths = c(1.6, 1)
+) 
+
+
+
+circ_main_fig <- plot_grid(
+  circ_main_top,
+  circ_main_middle,
+  circ_main_2ndmiddle,
+  circ_main_bottom,
+  ncol = 1,
+  rel_heights = c(1, 1, 1,1)  # Adjust as needed (0.08 is ~8% height spacer)
+)
+
+
+ggsave(
+  filename="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/circ_main_fig.png",
+  plot = circ_main_fig,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 225, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white",
+)
+
+
+
+```
+
+
+
+
+```{r upset stuff}
+
+colnames(LnF_filtered)[3] <- "Sample"
+
+sample_summary<- LnF_filtered %>%
+  group_by(New_circ_ID) %>% 
+  mutate(sample_count=n_distinct(Sample)) %>% 
+ dplyr::select(New_circ_ID,sample_count) %>% 
+  unique()
+
+length(unique(LnF_filtered$New_circ_ID))
+
+sample_counts <- ggplot(data=sample_summary,aes(x=sample_count))+
+  geom_bar()+theme_classic()
+
+sample_counts
+
+table(sample_summary$sample_count)
+
+#Let's filter down to circRNAs that are found in at least 3x replicates for a given treatment
+circRNAs_Consistent<-LnF_filtered %>% 
+  dplyr::select(New_circ_ID,Treatment,Sample) %>% 
+  dplyr::group_by(New_circ_ID,Treatment) %>% 
+  dplyr::mutate(Rep_Count=n_distinct(Sample)) %>% 
+ dplyr::select(!Sample) %>% 
+  unique()
+
+#view raw distribution of rep_count
+circRNAs_Consistent_bar<-ggplot(data=circRNAs_Consistent,aes(x=Rep_Count))+
+  geom_bar()+
+  theme_minimal()+
+  labs(x= "Number of Replicates",
+       y = "Number of circRNAs")+
+  geom_text(stat='count', aes(label=after_stat(count)), vjust=-1)+
+  ylim(c(0,16000))
+
+
+circRNAs_Consistent_bar
+
+circRNA_treatment_vd <- LnF_filtered %>% 
+  mutate(Treatment = recode(Treatment,
+                            "Rhiz" = "Rhizobia")) %>%
+  group_by(New_circ_ID) %>% 
+  summarise(Treatments = list(sort(unique(Treatment))),
+            .groups = "drop")
+
+Set_Order <- c("High Nutrient", "Low Nutrient", "Rhizobia")
+
+circRNA_treatment_vd_upset<-ggplot(data=circRNA_treatment_vd,aes(x=Treatments)) +
+    geom_bar() +
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1) +
+    scale_x_upset(n_intersections = 40, sets=Set_Order) +
+    labs(title="CircRNA_Treatment_Overlaps")+
+    scale_y_continuous(breaks = NULL, lim = c(0, 5000), name = "")+
+    theme_minimal()
+
+circRNA_treatment_vd_upset
+
+#VD Treatment of consistently detected circRNAs
+circRNAs_Consistent2 <- circRNAs_Consistent %>%
+  ungroup() %>%
+  group_by(New_circ_ID) %>%
+  filter(max(Rep_Count) >= 3)
+
+circRNA_treatment_consistent_vd <- circRNAs_Consistent2 %>%
+  mutate(Treatment = recode(Treatment,
+                            "Rhiz" = "Rhizobia")) %>%
+  group_by(New_circ_ID) %>%
+  summarise(
+    Treatments = list(sort(unique(Treatment))),
+    .groups = "drop"
+  )
+
+unique(LnF_filtered$Treatment)
+Set_Order<-c("High Nutrient", "Low Nutrient", "Rhizobia")
+circRNA_Consistent_treatment_vd_upset<-ggplot(data=circRNA_treatment_consistent_vd,aes(x=Treatments)) +
+    geom_bar() +
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1) +
+    scale_x_upset(n_intersections = 40,sets = Set_Order) +
+    labs(title="Consistently_Detected_CircRNA_Treatment_Overlaps")+
+    scale_y_continuous(breaks = NULL, lim = c(0, 1200), name = "")+
+    theme_minimal()
+
+circRNA_Consistent_treatment_vd_upset
+
+
+
+```
+
+```{r - Still valid but dint need all of these categories}
+
+Upset_Frame_Export <- circRNA_treatment_consistent_vd %>%
+  mutate(Set_List = sapply(Treatments, toString)) %>%  # Collapse list to comma-separated string
+  group_by(Set_List) %>%
+  mutate(Number_In_Intersection = n_distinct(New_circ_ID)) %>%
+  ungroup()
+
+
+CircINfo_Upset_Frame_Export<- merge(Upset_Frame_Export,y = LnF_filtered,by.x="New_circ_ID",by.y="New_circ_ID",all.x=T,all.y=F)
+
+write.xlsx(x=CircINfo_Upset_Frame_Export,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251201_Consistent_Upset_Groups.xlsx")
+
+
+Filtered_Supplement <- CircINfo_Upset_Frame_Export %>%
+  group_by(Set_List) %>%
+  filter(Number_In_Intersection %in% c(2, 58, 29)) %>%
+  ungroup() %>%
+  arrange(Number_In_Intersection, Set_List, New_circ_ID)
+
+
+Filtered_Supplement <- Filtered_Supplement %>%
+  dplyr::select(1,4,5,6,7, 10,11,19,20,39) %>%
+  mutate(Category = "Specific")
+
+
+write.xlsx(x=Filtered_Supplement,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/MainUpset_specific_circRNAs.xlsx")
+
+
+
+
+```
+
+
+```{r}
+
+
+LnF_filtered <- LnF_filtered %>%
+  dplyr::mutate(
+    Treatment = dplyr::if_else(Treatment == "Rhiz", "Rhizobia", Treatment)
+  )
+
+
+write.xlsx(x=LnF_filtered,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/LnF_filtered.xlsx")
+
+n_distinct(LnF_filtered$New_circ_ID)
+
+n_distinct(LnF_filtered$gene_id)
+
+write.xlsx(x=LnF_CIRIVIS,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/LnF_CIRIVIS.xlsx")
+
+
+
+```
+
+
+```{r}
+
+made_upset <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/make_shift_upset.xlsx")
+
+library(colorspace)
+
+custom_colors <- c(
+   "Hn"         = lighten("forestgreen", amount = 0.4),
+  "Ln"         = lighten("steelblue",   amount = 0.4),
+  "Rhiz"       = lighten("hotpink",     amount = 0.4),
+  "all"        = "grey70",
+  "Unique Hn"  = "forestgreen",   # colorblind-friendly
+  "Unique Ln"  = "steelblue",
+  "Unique Rhiz"= "hotpink"
+)
+
+made_upset$Treatmenet <- factor(
+  made_upset$Treatmenet,
+  levels = c("Hn", "Ln", "Rhiz", "all", "Unique Hn", "Unique Ln", "Unique Rhiz")
+)
+
+circRNA_upset <- ggplot(made_upset, aes(x = Treatmenet, y = Number, fill = Treatmenet)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Number), vjust = -0.6, size = 6) +
+  scale_fill_manual(values = custom_colors) +
+  labs(
+    x = "Treatment",
+    y = "Number of Unique circRNAs"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size= 16),
+    axis.title  = element_text(size = 18),
+    axis.line  = element_blank(),      # removes axis lines
+  axis.ticks = element_blank(),
+    legend.position = "none"
+  )
+
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/circRNA_barplot.png",
+  plot = circRNA_upset,
+  width = 8.5,     # full page width
+  height = 6.5,    # about one-quarter page height
+  units = "in",
+  dpi = 300
+)
+
+Hn_411 <- read.table(
+  "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/Hn_411.txt",
+  header = FALSE,
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::rename(New_circ_ID = V1)
+
+Ln_714 <- read.table(
+  "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/Ln_715.txt",
+  header = FALSE,
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::rename(New_circ_ID = V1)
+
+Rhiz_882 <- read.table(
+  "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/Rhiz_882.txt",
+  header = FALSE,
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::rename(New_circ_ID = V1)
+
+all_284 <- read.table(
+  "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/venns/all_284.txt",
+  header = FALSE,
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::rename(New_circ_ID = V1)
+
+data.frame(
+  Index = seq_along(colnames(LnF_filtered)),
+  Column = colnames(LnF_filtered)
+)
+
+Hn_411_info <- LnF_filtered %>%
+  filter(New_circ_ID %in% Hn_411$New_circ_ID) %>%
+  distinct(New_circ_ID, .keep_all = TRUE) %>%
+  dplyr::select(1,2,8,9,16,17,36) %>%
+  mutate(
+    Number_In_Intersection = nrow(.),  # or set to the specific number you want
+    Category = "Present in more than 3",
+    Treatment = "High Nutrient"
+  )
+
+Ln_714_info <- LnF_filtered %>%
+  filter(New_circ_ID %in% Ln_714$New_circ_ID) %>%
+  distinct(New_circ_ID, .keep_all = TRUE) %>%
+  dplyr::select(1,2,8,9,16,17,36) %>%
+  mutate(
+    Number_In_Intersection = nrow(.),  # or set to the specific number you want
+    Category = "Present in more than 3",
+    Treatment = "Low Nutrient"
+  )
+
+
+Rhiz_882_info <- LnF_filtered %>%
+  filter(New_circ_ID %in% Rhiz_882$New_circ_ID) %>%
+  distinct(New_circ_ID, .keep_all = TRUE) %>%
+  dplyr::select(1,2,8,9,16,17,36) %>%
+  mutate(
+    Number_In_Intersection = nrow(.),  # or set to the specific number you want
+    Category = "Present in more than 3",
+    Treatment = "Rhizobia"
+  )
+
+all_284_info <- LnF_filtered %>%
+  filter(New_circ_ID %in% all_284$New_circ_ID) %>%
+  distinct(New_circ_ID, .keep_all = TRUE) %>%
+  dplyr::select(1,2,8,9,16,17,36) %>%
+  mutate(
+    Number_In_Intersection = nrow(.),  # or set to the specific number you want
+    Category = "Present in more than 3",
+    Treatment = "ALL Treatments"
+  )
+
+
+
+
+Final_Supplement <- bind_rows(
+  Hn_411_info,
+  Ln_714_info,
+  Rhiz_882_info,
+  all_284_info
+) %>%
+  arrange(Number_In_Intersection, New_circ_ID)
+
+
+
+write.xlsx(x=Final_Supplement,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/MainUpset_Supplement_circs.xlsx")
+
+
+  
+
+
+```
+
+
+
+```{r}
+
+#unique total circs by treatment
+unique_circs_by_treatment <- LnF_filtered %>%
+  group_by(Treatment) %>%
+  summarize(num_unique=n_distinct(New_circ_ID))
+
+
+unique_circs_by_treatment$Treatment <- factor(unique_circs_by_treatment$Treatment, levels = c("High Nutrient", "Low Nutrient", "Rhizobia"))
+
+# Create the bar graph with each treatment having its own color
+unique_circs <- ggplot(unique_circs_by_treatment, aes(x = Treatment, y = num_unique, fill = Treatment)) +
+  geom_bar(stat = "identity") +
+   geom_text(aes(label = num_unique), vjust = 1.5, color = "white", fontface = "bold", size = 4) +
+  labs(
+       x = "Treatment",
+       y = "Unique CircRNAs") +
+  theme_classic() +
+   ylim(0, 8500)+
+  scale_fill_manual(values = c("High Nutrient" = "forestgreen" , "Low Nutrient" = "steelblue", "Rhizobia" = "hotpink"))+
+    theme(
+      panel.grid = element_blank(), 
+      legend.position = "none",
+      axis.text = element_text(size = 8),
+      axis.title.x = element_text(size = 10),       # Adjust x-axis title size
+      axis.title.y = element_text(size = 10))
+
+#circ unique circs
+
+avg_unique_circs_by_sample <- LnF_filtered %>%
+  group_by(Treatment, Sample) %>%
+  summarize(unique_circIDs_count = n_distinct(New_circ_ID)) %>%
+  ungroup()
+
+average_unique_circs_by_treatment <- avg_unique_circs_by_sample %>%
+  group_by(Treatment) %>%
+  summarize(average_unique_circs = round(mean(unique_circIDs_count)))
+
+
+average_unique_circs_by_treatment$Treatment <- factor(unique_circs_by_treatment$Treatment, levels = c("High Nutrient", "Low Nutrient", "Rhizobia"))
+
+# Create the bar graph with each treatment having its own color
+avg_unique_circs <- ggplot(average_unique_circs_by_treatment, aes(x = Treatment, y = average_unique_circs, fill = Treatment)) +
+  geom_bar(stat = "identity") +
+   geom_text(aes(label = average_unique_circs), vjust = 1.5, color = "white", fontface = "bold",  size = 4) +
+  labs(
+       x = "Treatment",
+       y = "Average unique\ncircRNAs") +
+  theme_classic() +
+   ylim(0, 2500)+
+  scale_fill_manual(values = c("High Nutrient" = "forestgreen" , "Low Nutrient" = "steelblue", "Rhizobia" = "hotpink"))+
+    theme(
+      panel.grid = element_blank(), 
+      legend.position = "none",
+      axis.text = element_text(size = 8),
+      axis.title.x = element_text(size = 10),       # Adjust x-axis title size
+      axis.title.y = element_text(size = 10)
+      )
+
+
+#Comparing unique circRNAs from each treatment to each other
+
+Hn_unique <- LnF_filtered %>%
+  filter(Treatment == "High Nutrient") %>%
+  pull(New_circ_ID) %>%
+  unique()
+
+Ln_unique <- LnF_filtered %>%
+  filter(Treatment == "Low Nutrient") %>%
+  pull(New_circ_ID) %>%
+  unique()
+
+Rhiz_unique <- LnF_filtered %>%
+  filter(Treatment == "Rhizobia") %>%
+  pull(New_circ_ID) %>%
+  unique()
+
+
+# Prepare list of sets
+unique_circ_sets <- list(Hn = Hn_unique, Ln = Ln_unique, Rhiz = Rhiz_unique)
+
+# Create and plot the Venn diagram
+ggVennDiagram(unique_circ_sets) +
+  theme(legend.position = "bottom")
+
+#average unique cognate genes
+
+avg_genes_uniq_by_sample <- LnF_filtered %>%
+  group_by(Treatment, Sample) %>%
+  summarize(unique_gene_count = n_distinct(gene_id)) %>%
+  ungroup()
+
+average_unique_genes_by_treatment <- avg_genes_uniq_by_sample %>%
+  group_by(Treatment) %>%
+  summarize(average_unique_genes = round(mean(unique_gene_count)))
+
+
+average_unique_genes_by_treatment$Treatment <- factor(average_unique_genes_by_treatment$Treatment, levels = c("High Nutrient", "Low Nutrient", "Rhizobia"))
+
+# Create the bar graph with each treatment having its own color
+unique_genes<-ggplot(average_unique_genes_by_treatment, aes(x = Treatment, y = average_unique_genes, fill = Treatment)) +
+  geom_bar(stat = "identity") +
+   geom_text(aes(label = average_unique_genes), vjust = 1.5, color = "white", fontface = "bold", size = 4) +
+  labs(
+       x = "Treatment",
+       y = "Average Unique\nGene IDs") +
+  theme_classic() +
+   ylim(0, 1500)+
+  scale_fill_manual(values = c("High Nutrient" = "forestgreen" , "Low Nutrient" = "steelblue", "Rhizobia" = "hotpink"))+
+    theme(
+      panel.grid = element_blank(), 
+      legend.position = "none",
+      axis.text = element_text(size = 8),
+      axis.title.x = element_text(size = 10),       # Adjust x-axis title size
+      axis.title.y = element_text(size = 10)
+     )
+      
+
+
+
+```
+
+
+
+```{r}
+
+minimal_data<-LnF_filtered %>% 
+  dplyr::select(New_circ_ID, Treatment) %>% 
+  unique() 
+
+
+Upset_Frame <- minimal_data %>%
+  group_by(New_circ_ID) %>%
+  summarise(Set_List = list(sort(unique(Treatment)))) %>%
+  ungroup() 
+  
+
+
+upset_plot <- ggplot(Upset_Frame, aes(x = Set_List)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = after_stat(count)), vjust = -0.5, size = 2.5) +
+  scale_x_upset(
+    n_intersections = 20,
+    order_by = "degree",
+    sets = c("High Nutrient", "Low Nutrient", "Rhizobia")
+  ) +
+  scale_y_continuous(
+    name = "Unique CircRNAs",
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_text( size=10, margin = margin(r = -20), angle = 90,
+    vjust = 1,
+    hjust = 0.5),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 8),
+    legend.position = "none",
+    plot.margin = margin(t = 5, r = 5, b = 5, l = -2)
+  )
+
+upset_plot
+
+
+# ggsave("upset_plot_totalcircs.png", plot = upset_plot, width = 8, height = 7, dpi = 300)
+
+
+
+```
+
+```{r}
+
+#include the number
+Upset_Frame_Export<- Upset_Frame %>% 
+  group_by(Set_List) %>% 
+  mutate(Number_In_Intersection = n_distinct(New_circ_ID)) %>% 
+  mutate(Set_List = sapply(Set_List, toString))
+
+CircINfo_Upset_Frame_Export <- merge(
+  Upset_Frame_Export,
+  y = minimal_data,
+  by = "New_circ_ID",  # use correct column name
+  all.x = TRUE,
+  all.y = FALSE
+)
+
+write.xlsx(x=CircINfo_Upset_Frame_Export,file="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/new LAF/Data analysis/new_combined/CircRNA/Analysis/251224_CircRNA_Upset_Groups_Suppl.xlsx")
+
+
+
+
+```
+
+```{r Supplemental Figure}
+
+library(cowplot)
+
+circ_sup_top <- plot_grid(
+  unique_circs, avg_unique_circs, 
+  labels = c("A", "B"),
+  # align = "v",       # align vertically
+  # axis = "tb" ,
+  nrow = 1
+)
+
+upset_plot <- upset_plot +
+  theme(
+    plot.margin = margin(
+      t = 2, r = 4, b = 2, l = 16,"pt" )
+  )
+
+circ_sup_middle<- plot_grid(
+  unique_genes, upset_plot,
+  labels = c("C", "D"),
+  rel_widths = c(1, 1),
+  nrow = 1
+)
+
+
+circ_sup <- plot_grid(
+  circ_sup_top,
+  circ_sup_middle,
+  ncol = 1
+)
+
+ggsave(
+  filename="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/circ_sup_fig.png",
+  plot = circ_sup,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 112.5, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white",
+)
+
+
+
+```
+
+```{r}
+
+
+
+
+
+```

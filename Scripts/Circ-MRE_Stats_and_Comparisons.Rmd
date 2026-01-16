@@ -1,0 +1,807 @@
+---
+title: "Circ-MRE_Stats_and_Comparisons"
+author: "Asa Budnick"
+date: "2025-12-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+#BiocManager::install("ballgown")
+
+library(ballgown)
+library(ggplot2)
+library(genefilter)
+library(GenomicRanges)
+library(plyr)
+library(dplyr)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(ggiraph)
+library(stringr)
+
+Google_Drive_prefix<-"/Users/asabudnick/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu"
+google_drive_prefix<-"~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/"
+
+```
+
+```{r Import circRNAs and circ-miRNA_psRNA_targets}
+#annotated_full_clustered_circs<-openxlsx::read.xlsx(sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/annotated_Full_clustered_metadata_circRNAs.xlsx",Google_Drive_prefix))
+annotated_full_clustered_circs<- openxlsx::read.xlsx("/Users/asabudnick/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218AB_annotated_Full_clustered_metadata_circRNAs.xlsx")
+
+
+circ_MRE_psRNA<-suppressWarnings(read.csv(file = "Lja-circ-MRE-psRNATargetv2_results.txt",header = T,sep="\t",skip = 1))
+
+```
+
+```{r import DEGs and CDS-miRNA psRNA trargets}
+DEGs<-read.csv(file=sprintf("%s/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Combined_DEG_comaprisons.csv",Google_Drive_prefix),header=T)
+
+cds_MRE_psRNA<-read.csv(file = "240106_psRNATargetJob_lj_CDS.txt",header = T,sep="\t",skip = 1)
+```
+
+```{r format  circ-MRE table}
+Full_miRNA_results<-unique(circ_MRE_psRNA)
+#not too many duplicates only 6 out of 16K, which is a good thing . . . 
+
+
+Full_miRNA_results$Target_Desc.<-gsub(x = Full_miRNA_results$Target_Desc., pattern = "^length", replacement = "ORIG length")
+Full_miRNA_results<-tidyr::separate(data = Full_miRNA_results, col = "Target_Desc.", into = c("OFFSET","Length","ISOFORM Expression"),sep = " " )
+Full_miRNA_results<-tidyr::separate(data = Full_miRNA_results, col = "Target_Acc.", into=c("Image_ID","circRNA_ID"),sep = "#")
+
+#find any hits that are distinct to the offset or to the orig
+Full_Distinct_hits<- Full_miRNA_results %>% 
+  group_by(miRNA_Acc., circRNA_ID) %>% 
+  filter(n_distinct(OFFSET)==1)
+
+#find hits only in offsets
+Full_Distinct_offset<-Full_Distinct_hits %>% 
+  filter(OFFSET=="OFFSET")
+Full_Distinct_offset$Distinct_to_Offset<-"Yes"
+
+#colnames(Full_Distinct_offset)
+#find hits that are in offset but not in original
+Full_miRNA_results<-merge(x=Full_miRNA_results, y=Full_Distinct_offset, by.x=colnames(Full_miRNA_results),by.y=colnames(Full_Distinct_offset)[-18], all.x=T)
+Full_miRNA_results$Distinct_to_Offset[is.na(Full_miRNA_results$Distinct_to_Offset)]<-"No"
+
+#remove duplicates from the offset in the cases where an MRE is present in both offset and original sequence
+Full_miRNA_results_dedup<-Full_miRNA_results %>% filter((OFFSET=="ORIG"&Distinct_to_Offset=="No")|(OFFSET=="OFFSET"&Distinct_to_Offset=="Yes"))
+
+
+```
+#compare the #s of circRNAs with full sequence, how many of MREs, how many have bsgMRE for Lja, At, OS
+
+```{r import Os and At circs }
+Os_circs<-openxlsx::read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S2",startRow = 3)
+
+#Table S8 is arabidopsis circRNAs
+Ath_circs<-openxlsx::read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S8",startRow = 3)
+
+#Many of these circRNAs have multiple full length sequences - some up to 50+ . . . also some circRNAs are very similar in terms of genomic position. 
+
+#For now we will only process the first sequence for each circRNA and won't condense the circRNAs based on genomic window
+
+#Reformat dataframes, create offsets and export fastas
+Os_circs_reformat<-Os_circs %>% select(circ_ID=`circRNA_name.(PlantcircBase)`,`details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`) %>% tidyr::separate(col = `details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`,into = c("transcript_length","circ_Exons","Sequence"),sep = ";") %>% unique()
+
+At_circs_reformat<-Ath_circs %>% select(circ_ID=`circRNA_name.(PlantcircBase)`,`details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`) %>% tidyr::separate(col = `details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`,into = c("transcript_length","circ_Exons","Sequence"),sep = ";") %>% unique()
+
+```
+
+
+```{r import and process Os and At psRNAtargetv2 results}
+
+
+Os_circ_MRE_psRNA<-suppressWarnings(read.csv(file = "Os-circ-MRE-psRNATargetv2_results.txt",header = T,sep="\t",skip = 1))
+
+At_circ_MRE_psRNA<-suppressWarnings(read.csv(file = "At-circ-MRE-psRNATargetv2_results.txt",header = T,sep="\t",skip = 1))
+
+Os_Full_miRNA_results<-unique(Os_circ_MRE_psRNA)
+
+Os_Full_miRNA_results$Target_Desc.<-gsub(x = Os_Full_miRNA_results$Target_Desc., pattern = "^length", replacement = "ORIG length")
+Os_Full_miRNA_results<-tidyr::separate(data = Os_Full_miRNA_results, col = "Target_Desc.", into = c("OFFSET","Length","ISOFORM Expression"),sep = " " )
+colnames(Os_Full_miRNA_results)[2]<-"circRNA_ID"
+
+#Fill in ORIG for original sequences
+Os_Full_miRNA_results<-Os_Full_miRNA_results %>% mutate(OFFSET=ifelse(OFFSET=="OFFSET","OFFSET","ORIG"))
+#find any hits that are distinct to the offset or to the orig
+Os_Full_Distinct_hits<- Os_Full_miRNA_results %>% 
+  group_by(miRNA_Acc., circRNA_ID) %>% 
+  filter(n_distinct(OFFSET)==1)
+
+#find hits only in offsets
+Os_Full_Distinct_offset<-Os_Full_Distinct_hits %>% 
+  filter(OFFSET=="OFFSET")
+Os_Full_Distinct_offset$Distinct_to_Offset<-"Yes"
+
+#colnames(Full_Distinct_offset)
+#find hits that are in offset but not in original
+Os_Full_miRNA_results<-merge(x=Os_Full_miRNA_results, y=Os_Full_Distinct_offset, by.x=colnames(Os_Full_miRNA_results),by.y=colnames(Os_Full_Distinct_offset)[-17], all.x=T)
+Os_Full_miRNA_results$Distinct_to_Offset[is.na(Os_Full_miRNA_results$Distinct_to_Offset)]<-"No"
+
+#remove duplicates from the offset in the cases where an MRE is present in both offset and original sequence
+Os_Full_miRNA_results_dedup<-Os_Full_miRNA_results %>% filter((OFFSET=="ORIG"&Distinct_to_Offset=="No")|(OFFSET=="OFFSET"&Distinct_to_Offset=="Yes"))
+
+
+
+At_Full_miRNA_results<-unique(At_circ_MRE_psRNA)
+
+At_Full_miRNA_results$Target_Desc.<-gsub(x = At_Full_miRNA_results$Target_Desc., pattern = "^length", replacement = "ORIG length")
+At_Full_miRNA_results<-tidyr::separate(data = At_Full_miRNA_results, col = "Target_Desc.", into = c("OFFSET","Length","ISOFORM Expression"),sep = " " )
+colnames(At_Full_miRNA_results)[2]<-"circRNA_ID"
+
+#Fill in ORIG for original sequences
+At_Full_miRNA_results<-At_Full_miRNA_results %>% mutate(OFFSET=ifelse(OFFSET=="OFFSET","OFFSET","ORIG"))
+#find any hits that are distinct to the offset or to the orig
+At_Full_Distinct_hits<- At_Full_miRNA_results %>% 
+  group_by(miRNA_Acc., circRNA_ID) %>% 
+  filter(n_distinct(OFFSET)==1)
+
+#find hits only in offsets
+At_Full_Distinct_offset<-At_Full_Distinct_hits %>% 
+  filter(OFFSET=="OFFSET")
+At_Full_Distinct_offset$Distinct_to_Offset<-"Yes"
+
+#colnames(Full_Distinct_offset)
+#find hits that are in offset but not in original
+At_Full_miRNA_results<-merge(x=At_Full_miRNA_results, y=At_Full_Distinct_offset, by.x=colnames(At_Full_miRNA_results),by.y=colnames(At_Full_Distinct_offset)[-17], all.x=T)
+At_Full_miRNA_results$Distinct_to_Offset[is.na(At_Full_miRNA_results$Distinct_to_Offset)]<-"No"
+
+#remove duplicates from the offset in the cases where an MRE is present in both offset and original sequence
+At_Full_miRNA_results_dedup<-At_Full_miRNA_results %>% filter((OFFSET=="ORIG"&Distinct_to_Offset=="No")|(OFFSET=="OFFSET"&Distinct_to_Offset=="Yes"))
+
+```
+
+
+
+```{r merge miRNA info into full circRNA dataframe }
+
+
+Full_miRNA_results_dedup$circRNA_ID<- gsub(x=Full_miRNA_results_dedup$circRNA_ID,pattern="\\|",replacement="-")
+annotated_full_clustered_circs$circRNA_ID %in% Full_miRNA_results_dedup$circRNA_ID
+
+annotated_full_clustered_circs_miRNA_added<-merge(x=annotated_full_clustered_circs,y=Full_miRNA_results_dedup,by=c("Image_ID","circRNA_ID"),all.x=T,all.y=F)
+```
+
+```{r Pull numbers for number of circs, number of unique circs with MREs, number of circs with bsgMRE}
+#First compile all unique psRNAtarget results into a single frame
+Full_miRNA_results_dedup$Species<-"Lj"
+Os_Full_miRNA_results_dedup$Species<-"Os"
+At_Full_miRNA_results_dedup$Species<-"At"
+
+Unified_circMREs<-bind_rows(Full_miRNA_results_dedup %>% select(miRNA_Acc.,circRNA_ID,Multiplicity,Expectation,Distinct_to_Offset,Species),
+                            Os_Full_miRNA_results_dedup %>% select(miRNA_Acc.,circRNA_ID,Multiplicity,Expectation,Distinct_to_Offset,Species),
+                            At_Full_miRNA_results_dedup %>% select(miRNA_Acc.,circRNA_ID,Multiplicity,Expectation,Distinct_to_Offset,Species)) %>% unique()
+
+sprintf("%s unique Arabidopsis circRNAs",length(unique(At_circs_reformat$circ_ID)))
+sprintf("%s unique Rice circRNAs",length(unique(Os_circs_reformat$circ_ID)))
+sprintf("%s Total unique Lotus circRNAs",length(unique(annotated_full_clustered_circs$New_circ_ID)))
+
+#Number of cirivis circs is very different depending on looking at 
+#cirivis_circs<-annotated_full_clustered_circs2 %>% filter(!is.na(Image_ID))
+Combined_circs<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/all_sample_circ_fasta.fa")
+Unique_vis_ID_data_Frame<-as.data.frame(Combined_circs@id)
+Unique_vis_ID_data_Frame_circRNA_ID<-str_extract(string = Unique_vis_ID_data_Frame$x,pattern = "(stout.*#)(LjG1.1_.*)( length.*)",group = 2) %>% gsub(pattern="\\|", replacement="-", x=.) %>% unique()
+sprintf("%s Unique Lotus circRNAs with ciri-vis sequences", length(unique(Unique_vis_ID_data_Frame_circRNA_ID)))
+
+#length(unique(Unique_vis_ID_data_Frame$circRNA_ID))
+#length(unique(cirivis_circs$circRNA_ID))
+#We have 9662 in the dataframe but only 8407 with sequences
+#sum(unique(gsub(Unique_vis_ID_data_Frame$circRNA_ID,pattern="\\|",replacement="-")) %in%unique(cirivis_circs$circRNA_ID)) 
+#unique(cirivis_circs$circRNA_ID)[!(unique(cirivis_circs$circRNA_ID) %in% unique(gsub(Unique_vis_ID_data_Frame$circRNA_ID,pattern="\\|",replacement="-")))]
+
+```
+
+```{r Pull the number of distinct MREs per circRNA and per species, include any that have sequences as baseline}
+
+
+Unified_circMREs_miRNA_Flatten<-Unified_circMREs %>% mutate(miRNA_Family=str_extract(miRNA_Acc., pattern="(...-)(miR[:DIGIT:]*)([:lower:]?)(-?[35]?p?)",group = 2))
+
+Unified_circMREs_distinct_summary<-Unified_circMREs_miRNA_Flatten %>% select(circRNA_ID,Species,miRNA_Family) %>%  group_by(circRNA_ID,Species) %>% summarise( UniqMIR=n_distinct(miRNA_Family))
+
+
+
+#Add in any circRNA with no MRE
+zero_rice<-unique(Os_circs_reformat$circ_ID[!(Os_circs_reformat$circ_ID %in% Unified_circMREs_distinct_summary$circRNA_ID)])
+zero_arab<-unique(At_circs_reformat$circ_ID[!(At_circs_reformat$circ_ID %in% Unified_circMREs_distinct_summary$circRNA_ID)])
+zero_lotus<-Unique_vis_ID_data_Frame_circRNA_ID[!(Unique_vis_ID_data_Frame_circRNA_ID %in% Unified_circMREs_distinct_summary$circRNA_ID)]
+length(unique(Unified_circMREs_distinct_summary$circRNA_ID[Unified_circMREs_distinct_summary$Species=="Lj"]))
+
+zero_lotus_df<-data.frame("circRNA_ID"=zero_lotus,"Species"="Lj","UniqMIR"=0)
+zero_rice_df<-data.frame("circRNA_ID"=zero_rice,"Species"="Os","UniqMIR"=0)
+zero_arab_df<-data.frame("circRNA_ID"=zero_arab,"Species"="At","UniqMIR"=0)
+Zeros_Added_uniqMIR<-bind_rows(zero_lotus_df,zero_rice_df,zero_arab_df,Unified_circMREs_distinct_summary)
+Zeros_Added_uniqMIR2<-Zeros_Added_uniqMIR %>% mutate(Uniq_MIR_Text=ifelse(UniqMIR>20,"21-29",
+                                                                         ifelse(UniqMIR>10,"11-20",as.character(UniqMIR))
+                                                     
+                                                     ))
+
+Zeros_Added_uniqMIR2$Uniq_MIR_Text<-factor(Zeros_Added_uniqMIR2$Uniq_MIR_Text,levels = c("0","1","2","3","4","5","6","7","8","9","10","11-20","21-29"))
+
+Zeros_Added_uniqMIR2$Species<-factor(Zeros_Added_uniqMIR2$Species,levels = c("Lj","At","Os"))
+
+Dist_MIR_Plot<-ggplot(Zeros_Added_uniqMIR2)+
+  geom_bar(mapping = aes(x = Uniq_MIR_Text,fill=Species))+
+  facet_grid(rows=Zeros_Added_uniqMIR2$Species,scale="free_y")+
+  scale_fill_viridis_d(begin=0.2,end=0.8)+
+  ylab("# CircRNAs")+
+  xlab("Distinct MIR Family MREs")+
+  theme_minimal()+
+  theme(strip.text = element_blank())
+Dist_MIR_Plot
+
+
+#reconfigure for total distinct MRE:
+Unified_circMREs_total_summary<-Unified_circMREs_miRNA_Flatten %>% select(circRNA_ID,Species,miRNA_Family,Multiplicity) %>% group_by(circRNA_ID,Species,miRNA_Family) %>% summarize(Family_total=median(Multiplicity)) %>% ungroup() %>% group_by(circRNA_ID,Species) %>% summarise( total_MRE=sum(Family_total))
+
+
+zero_lotus_df2<-data.frame("circRNA_ID"=zero_lotus,"Species"="Lj","total_MRE"=0)
+zero_rice_df2<-data.frame("circRNA_ID"=zero_rice,"Species"="Os","total_MRE"=0)
+zero_arab_df2<-data.frame("circRNA_ID"=zero_arab,"Species"="At","total_MRE"=0)
+Zeros_Added_total_MRE<-bind_rows(zero_lotus_df2,zero_rice_df2,zero_arab_df2,Unified_circMREs_total_summary)
+Zeros_Added_total_MRE2<-Zeros_Added_total_MRE %>% mutate(total_MIR_Text=ifelse(total_MRE>30,"31-39",ifelse(total_MRE>20,"21-30",
+                                                                         ifelse(total_MRE>10,"11-20",as.character(total_MRE))
+                                                     
+                                                     )))
+
+Zeros_Added_total_MRE2$total_MIR_Text<-factor(Zeros_Added_uniqMIR2$Uniq_MIR_Text,levels = c("0","1","2","3","4","5","6","7","8","9","10","11-20","21-30","31-38"))
+
+Zeros_Added_total_MRE2$Species<-factor(Zeros_Added_total_MRE2$Species,levels = c("Lj","At","Os"))
+
+
+total_MRE_plot<-ggplot(Zeros_Added_total_MRE2)+
+  geom_bar(mapping = aes(x = total_MIR_Text,fill=Species))+
+  facet_grid(rows=Zeros_Added_total_MRE2$Species,scale="free_y")+
+  scale_fill_viridis_d(begin=0.2,end=0.8)+
+  ylab("# CircRNAs")+
+  xlab("Total MREs")+
+  theme_minimal()+
+  theme(strip.text = element_blank())
+total_MRE_plot
+
+#Pull the number of lotus circRNAs with >1 MRE
+
+filtered_lj_multiMRE<-Zeros_Added_total_MRE2 %>% filter(Species=="Lj") %>% filter(total_MRE>1)
+length(unique(filtered_lj_multiMRE$circRNA_ID))
+       
+filtered_lj_MRE_stats<-Zeros_Added_total_MRE2 %>% filter(Species=="Lj") %>% unique() %>% select(total_MRE) %>% table()
+```
+
+
+
+```{r compare number of bsgMREs }
+
+Unified_circMREs_distinct_summary<-Unified_circMREs_miRNA_Flatten %>% select(circRNA_ID,Species,Distinct_to_Offset,miRNA_Family) %>%  group_by(circRNA_ID,Species,Distinct_to_Offset) %>% summarise( UniqMIR=n_distinct(miRNA_Family))
+
+#Identify the number of circRNAs that have any bsgMRE
+
+Unified_circMREs_type<-Unified_circMREs_miRNA_Flatten %>% select(circRNA_ID,Species,miRNA_Family,Distinct_to_Offset) %>% mutate(MRE_Type=ifelse(Distinct_to_Offset=="Yes","bsgMRE","MRE")) %>% select(circRNA_ID,Species,MRE_Type) %>% unique()
+
+zero_lotus_df2<-data.frame("circRNA_ID"=zero_lotus,"Species"="Lj","MRE_Type"="None")
+zero_rice_df2<-data.frame("circRNA_ID"=zero_rice,"Species"="Os","MRE_Type"="None")
+zero_arab_df2<-data.frame("circRNA_ID"=zero_arab,"Species"="At","MRE_Type"="None")
+
+Zeros_Added_Unified_circMREs_type<-bind_rows(Unified_circMREs_type,zero_lotus_df2,zero_rice_df2,zero_arab_df2)
+Zeros_Added_Unified_circMREs_type$Species<-factor(Zeros_Added_Unified_circMREs_type$Species,levels = c("Lj","At","Os"))
+
+BsgMRE_Count_plot<-ggplot(Zeros_Added_Unified_circMREs_type)+
+  geom_bar(aes(x=Species,fill=MRE_Type),position="fill")+
+    scale_fill_viridis_d(begin=0.8,end=0.2)+
+  ylab("Portion of CircRNAs")+
+  theme_minimal()
+
+BsgMRE_Count_plot
+
+
+#panel figure
+
+library(cowplot)
+
+sup_13<-plot_grid(Dist_MIR_Plot+theme_classic(),BsgMRE_Count_plot+theme_classic(),nrow = 2,labels=c("A","B"))
+sup_13
+
+ggsave(
+  filename="sup_13.png",
+  plot = sup_13,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 210, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+```
+
+```{r gather the number of miRNAs and portion with circRNA hits data}
+
+
+lj_mirs<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/mirbase_lja_mature.fa")
+lj_mirs_data_Frame<-as.data.frame(lj_mirs@id)
+lj_mirs_data_Frame$miRNA_ID<-str_extract(string=lj_mirs_data_Frame$x,pattern="(^.*) MIM.*",group=1)
+
+
+Os_mirs<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/mirbase_osa_mature.fa")
+Os_mirs_data_Frame<-as.data.frame(Os_mirs@id)
+Os_mirs_data_Frame$miRNA_ID<-str_extract(string=Os_mirs_data_Frame$x,pattern="(^.*) MIM.*",group=1)
+
+At_mirs<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/mirbase_ath_mature.fa")
+At_mirs_data_Frame<-as.data.frame(At_mirs@id)
+At_mirs_data_Frame$miRNA_ID<-str_extract(string=At_mirs_data_Frame$x,pattern="(^.*) MIM.*",group=1)
+
+sprintf("%s Unique Lotus japonicus miRNAs",length(unique(lj_mirs_data_Frame$miRNA_ID)))
+sprintf("%s Unique Arabidopsis thaliana miRNAs",length(unique(At_mirs_data_Frame$miRNA_ID)))
+sprintf("%s Unique Oryza sativa miRNAs",length(unique(Os_mirs_data_Frame$miRNA_ID)))
+
+```
+
+```{r identify miRNA hits across species at the miRNA family level}
+
+
+Unified_circMREs_miRNA_Flatten<-Unified_circMREs %>% mutate(miRNA_Family=str_extract(miRNA_Acc., pattern="(...-)(miR[:DIGIT:]*)([:lower:]?)(-?[35]?p?)",group = 2))
+
+
+
+#Add in any circRNA with no MRE
+zero_rice_mirs<-unique(Os_mirs_data_Frame$miRNA_ID[!(Os_mirs_data_Frame$miRNA_ID%in% Unified_circMREs_miRNA_Flatten$miRNA_Acc.)])
+zero_arab_mirs<-unique(At_mirs_data_Frame$miRNA_ID[!(At_mirs_data_Frame$miRNA_ID%in% Unified_circMREs_miRNA_Flatten$miRNA_Acc.)])
+zero_lotus_mirs<-unique(lj_mirs_data_Frame$miRNA_ID[!(lj_mirs_data_Frame$miRNA_ID%in% Unified_circMREs_miRNA_Flatten$miRNA_Acc.)])
+
+Unified_circMREs_miRNA_Flatten_Mir_Sum<-Unified_circMREs_miRNA_Flatten %>% select(miRNA_Acc.,circRNA_ID,Species) %>% group_by(miRNA_Acc.,Species) %>% summarise(circ_MRE=n_distinct(circRNA_ID))
+
+zero_MIR_lotus_df2<-data.frame("miRNA_Acc."=zero_lotus_mirs,"Species"="Lj","circ_MRE"=0)
+#zero_MIR_rice_df2<-data.frame("circRNA_ID"=zero_rice,"Species"="Os","circ_MRE"="None").  THERE ARE NO RICE MIRS without CIRCMRE
+zero_MIR_arab_df2<-data.frame("miRNA_Acc."=zero_arab_mirs,"Species"="At","circ_MRE"=0)
+Zeros_Added_Unified_circMREs_miRNA_Flatten_Mir_Sum<-bind_rows(Unified_circMREs_miRNA_Flatten_Mir_Sum,zero_MIR_lotus_df2,zero_MIR_arab_df2)
+Zeros_Added_Unified_circMREs_miRNA_Flatten_Mir_Sum$Species<-factor(Zeros_Added_Unified_circMREs_miRNA_Flatten_Mir_Sum$Species,levels = c("Lj","At","Os"))
+
+
+Dist_circ_targ_Plot<-ggplot(Zeros_Added_Unified_circMREs_miRNA_Flatten_Mir_Sum)+
+  geom_histogram(mapping = aes(x = circ_MRE,fill=Species))+
+  facet_grid(rows=Zeros_Added_Unified_circMREs_miRNA_Flatten_Mir_Sum$Species)+
+  scale_fill_viridis_d(begin=0.2,end=0.8)+
+  ylab("# miRNAs")+
+  xlab("Distinct circRNA hits")+
+  theme_minimal()+
+  theme(strip.text = element_blank())
+Dist_circ_targ_Plot
+```
+
+```{r Check for overlapping bsgMREs}
+bsgMRE_Select<-Unified_circMREs_miRNA_Flatten %>% filter(Distinct_to_Offset=="Yes") %>% select(circRNA_ID,Species,miRNA_Family) %>% unique() %>% group_by(miRNA_Family) %>% mutate(Num_species=n_distinct(Species)) %>% filter(Num_species==3)
+MRE_Select<-Unified_circMREs_miRNA_Flatten %>% select(circRNA_ID,Species,miRNA_Family) %>% unique() %>% group_by(miRNA_Family) %>% mutate(Num_species=n_distinct(Species)) %>% filter(Num_species==3)
+
+length(unique(Unified_circMREs_miRNA_Flatten$miRNA_Family))
+length(unique(MRE_Select$miRNA_Family))
+length(unique(bsgMRE_Select$miRNA_Family))
+
+#There are 678 unique miRNA families
+#12 are in common in Lj, At, and Os
+#9 each target a bsgMRE on at least one circRNA in Lj, At, and Os
+
+unique(bsgMRE_Select$miRNA_Family)
+#"miR164" - target NAC transcription factors, involved in development esp leaf
+#"miR168" - possibly targets AGO1 and is thus a miRNA-regulating miRNA
+#"miR171" - plant growth and development, hormone signaling, stress-response
+#"miR172" - Regulate apatela2-like transcription factors, floral transition
+#"miR390" - directs tasiRNA production via TAS3 to regulate auxin responsive factor genes
+#"miR395" - sulfate metabolism, sultr genes 
+#"miR396" - arabidopsis regulates the switch between stem cells and transit-amplifying cells in arabidopsis roots
+#"miR397" - mainly target laccase genes functioning in lignin, also Casein kinase II subunit Beta3 to mediate circadian regulation and plant flowering
+#"miR398" - contributes to stress response and developmental regulation 
+
+```
+
+```{r import circRNA sequences with offset to compare sequences for mutual bsgMRE hits}
+lj_circ_seq_offset<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218_LnF_Circs_with_offset.fasta")
+lj_circ_seq_data_Frame<-data.frame(lj_circ_seq_offset@id,"sequence"=as.character(ShortRead::sread(lj_circ_seq_offset)))
+lj_circ_seq_data_Frame<-lj_circ_seq_data_Frame %>% mutate(circRNA_ID=str_extract(string = lj_circ_seq_offset.id,pattern = "(stout.*#)(LjG1.1_.*\\|[:digit:]*)[:blank:](OFFSET.*|length.*)",group = 2)) %>% mutate(offset=grepl("OFFSET",x = lj_circ_seq_offset.id)) %>% mutate(circRNA_ID=gsub(circRNA_ID,pattern="\\|",replacement="-")) %>% select(circRNA_ID,offset,sequence)
+
+os_circ_seq_offset<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/OS_Circ_with-OFFSET.fa")
+os_circ_seq_data_Frame<-data.frame(os_circ_seq_offset@id,"sequence"=as.character(ShortRead::sread(os_circ_seq_offset)))
+os_circ_seq_data_Frame<-os_circ_seq_data_Frame %>% mutate(circRNA_ID=str_extract(string = os_circ_seq_offset.id,pattern = "(osa_circ.*[:digit:])[:blank:]?(OFFSET)?",group = 1)) %>% mutate(offset=grepl("OFFSET",x = os_circ_seq_offset.id))%>% select(circRNA_ID,offset,sequence)
+
+at_circ_seq_offset<-ShortRead::readFasta("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/At_Circ_with-OFFSET.fa")
+at_circ_seq_data_Frame<-data.frame(at_circ_seq_offset@id,"sequence"=as.character(ShortRead::sread(at_circ_seq_offset)))
+at_circ_seq_data_Frame<-at_circ_seq_data_Frame %>% mutate(circRNA_ID=str_extract(string = at_circ_seq_offset.id,pattern = "(ath_circ.*[:digit:])[:blank:]?(OFFSET)?",group = 1)) %>% mutate(offset=grepl("OFFSET",x = at_circ_seq_offset.id))%>% select(circRNA_ID,offset,sequence)
+
+
+circRNA_sequence_df<-bind_rows(lj_circ_seq_data_Frame,os_circ_seq_data_Frame,at_circ_seq_data_Frame)
+```
+
+```{r For a given miRNA we want to pull all of the circRNA targets for the sequences and make an msa}
+library(msa)
+library(Biostrings)
+
+for(MIR in unique(bsgMRE_Select$miRNA_Family)){
+  print(MIR)
+  temp_circIDs<-bsgMRE_Select %>% filter(miRNA_Family==MIR) %>% ungroup() %>% select(circRNA_ID)
+  temp_circseq<-circRNA_sequence_df %>% filter(circRNA_ID %in% temp_circIDs$circRNA_ID & offset==T)
+  temp_strings<-DNAStringSet(x = temp_circseq$sequence,use.names = T)
+  temp_strings@ranges@NAMES<-temp_circseq$circRNA_ID
+  temp_mod_fasta <- character(nrow(temp_circseq) * 2)
+temp_mod_fasta[c(TRUE, FALSE)] <- paste0(">", temp_circseq$circRNA_ID)
+temp_mod_fasta[c(FALSE, TRUE)] <- temp_circseq$sequence
+writeLines(temp_mod_fasta, sprintf("Offset_circs_putative_%s_bsgMRE.fa",MIR))
+}
+
+temp_strings
+
+```
+
+```{r  we can try using MARS to 'rotate' sequences for more ideal MSAs}
+# Example input to Mars ./mars -a DNA -m 0 -i ./data/10.gappy.fasta -o ./data/10.gappy.output.fasta -q 5 -l 20 -P 1
+
+#Need fastas for input into mars so we should first write an example test fasta and then run it via a subprocess call
+
+#system(command = sprintf("/Users/asabudnick/MARS/mars -a DNA -m 0 -i %s -o %s -q 5 -l 20 -P 1", "Offset_circs_putative_miR164_bsgMRE.fa","mir164_prep_test.fa"))
+#Test worked 
+
+#run it for all of our MIR groups
+
+for(MIR in unique(bsgMRE_Select$miRNA_Family)){
+  system(command = sprintf("/Users/asabudnick/MARS/mars -a DNA -m 0 -i %s -o %s -q 5 -l 20 -P 1", sprintf("Offset_circs_putative_%s_bsgMRE.fa",MIR),sprintf("MARS_Out_%s_bsgMRE-circs.fa",MIR)))
+}
+
+sprintf("MARS_Out_%s_bsgMRE-circs.fa",MIR)
+#Try to look at them with MSA
+mir164_strings<-readDNAStringSet("MARS_Out_miR164_bsgMRE-circs.fa",use.names = T)
+mir164_msa<-msa(mir164_strings)
+msaPrettyPrint(mir164_msa)
+
+#Turning off for now to not overwrite 
+#for(file in list.files(pattern="MARS_Out.*.fa")){
+#  mir_strings<-readDNAStringSet(file,use.names = T)
+#  mir_msa<-msa(mir_strings)
+#  msaPrettyPrint(mir_msa,file = paste0(gsub(x = file,pattern="\\.fa",replacement="_"),"MSApp.pdf"))
+#}
+
+```
+
+
+```{r Look up products for only the relevent bsgMRE circ genes}
+
+
+os_circ_genes<-openxlsx::read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S4",startRow = 4)
+
+at_circ_genes<-openxlsx::read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S10",startRow = 4)
+
+#Need to try to pull descriptions for the genes from ncbi 
+#install.packages("rentrez")
+ library(rentrez)
+# 
+# genehit<-entrez_search(db="gene",term="AT1G28520")
+# print(genehit)
+# 
+# summary_obj<-entrez_summary(db="gene",id = genehit$ids[1])
+at_circ_genes_bsgMRE<-at_circ_genes %>%  filter(circRNA_name_in_PlantcircBase %in% bsgMRE_Select$circRNA_ID)
+
+
+#For a given ID we want to pull the gene accession number and pull the gene name and description from the summary field
+
+at_genes<-data.frame()
+ for(gene in unique(at_circ_genes_bsgMRE$parental_genes)){
+   temp_gene_hit<-try(entrez_search(db="gene",term=gene))
+   temp_sum<-try(entrez_summary(db="gene",id = temp_gene_hit$ids[1]))
+   temp_df<-try(data.frame("gene_id"=gene,"entrez_id"=temp_gene_hit$ids[1],"gene_name"=temp_sum$name,"product"=temp_sum$description))
+   at_genes<-bind_rows(temp_df,at_genes)
+ }
+#took apx 15 minutes to run so saving for reloading later
+# openxlsx::write.xlsx(x=at_genes, file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/251229_at_genes.xlsx",google_drive_prefix))
+
+#at_genes<-openxlsx::read.xlsx(xlsxFile  = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/251229_at_genes.xlsx",google_drive_prefix))
+ 
+
+sum(unique(at_circ_genes_bsgMRE$parental_genes) %in% unique(at_genes$gene_id))
+length(unique(at_circ_genes_bsgMRE$parental_genes))
+
+#Got hits for all 19 at circ parent genes
+os_circ_genes_bsgMRE<-os_circ_genes %>%  filter(circRNA_name_in_PlantcircBase %in% bsgMRE_Select$circRNA_ID)
+
+os_genes<-data.frame()
+ for(gene in unique(os_circ_genes_bsgMRE$parental_genes)){
+   temp_gene_hit<-try(entrez_search(db="gene",term=gene))
+   if(length(temp_gene_hit$ids)>0){
+   temp_sum<-try(entrez_summary(db="gene",id = temp_gene_hit$ids[1]))
+   temp_df<-try(data.frame("gene_id"=gene,"entrez_id"=temp_gene_hit$ids[1],"gene_name"=temp_sum$name,"product"=temp_sum$description))
+   os_genes<-bind_rows(temp_df,os_genes)}
+ }
+
+
+sum(unique(os_circ_genes_bsgMRE$parental_genes) %in% unique(os_genes$gene_id))
+length(unique(os_circ_genes_bsgMRE$parental_genes))
+#only retrieved 27 out of 34 . . . 
+
+#Merge in tables and also include lotus gene ids
+os_circ_genes_bsgMRE_anno<-merge(os_circ_genes_bsgMRE,y = os_genes,by.x="parental_genes",by.y="gene_id",all.x=T)
+at_circ_genes_bsgMRE_anno<-merge(at_circ_genes_bsgMRE,y = at_genes,by.x="parental_genes",by.y="gene_id",all.x=T)
+osat_circ_genes_bsgMRE_anno<-bind_rows(os_circ_genes_bsgMRE_anno,at_circ_genes_bsgMRE_anno) 
+bsgMRE_Select_anno<-merge(bsgMRE_Select,y = osat_circ_genes_bsgMRE_anno,by.x="circRNA_ID",by.y="circRNA_name_in_PlantcircBase",all.x=T)
+
+lotus_select_circs<-annotated_full_clustered_circs_miRNA_added %>%filter(circRNA_ID %in% bsgMRE_Select$circRNA_ID) %>% select(circRNA_ID,gene_id,Product) %>%  unique()
+bsgMRE_Select_anno<- bsgMRE_Select_anno %>% merge(.,y=lotus_select_circs,by="circRNA_ID",all.x=T,all.y=F) %>% select(miRNA_Family,Species,circRNA_ID,gene_name,product,Product,gene_id,parental_genes) %>% unique()
+
+bsgMRE_Select_anno$PRODUCT<-bsgMRE_Select_anno$product
+bsgMRE_Select_anno$PRODUCT[is.na(bsgMRE_Select_anno$PRODUCT)]<-bsgMRE_Select_anno$Product[is.na(bsgMRE_Select_anno$PRODUCT)]
+bsgMRE_Select_anno$Gene_ID<-bsgMRE_Select_anno$parental_genes
+bsgMRE_Select_anno$Gene_ID[is.na(bsgMRE_Select_anno$Gene_ID)]<-bsgMRE_Select_anno$gene_id[is.na(bsgMRE_Select_anno$Gene_ID)]
+bsgMRE_Select_anno_fin<-bsgMRE_Select_anno %>% select(miRNA_Family,circRNA_ID,Species,"Product"=PRODUCT,"gene_id"=Gene_ID,gene_name)
+
+
+
+```
+
+```{r export things so far}
+#export bsgMRE selection with genes
+openxlsx::write.xlsx(x=bsgMRE_Select_anno_fin, file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/common_miR_bsgMRE_targets_anno.xlsx",google_drive_prefix))
+
+#export circ+miRNA dataframe
+openxlsx::write.xlsx(x=annotated_full_clustered_circs_miRNA_added, file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/251229_annotated_full_clustered_circs_miRNA_added.xlsx",google_drive_prefix))
+
+openxlsx::write.xlsx(x=Unified_circMREs_miRNA_Flatten, file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/251230_Lj_At_Os_circMREs.xlsx",google_drive_prefix))
+
+
+```
+
+
+```{r }
+#Check miRNA co-occurence and for bsgMREs in 1, 2 or 3 species
+
+#upset plot 
+library(ggupset)
+MRE_upset_list<-Unified_circMREs_miRNA_Flatten %>% select(Species,miRNA_Family) %>% unique() %>% group_by(miRNA_Family) %>% mutate(Sets=list(sort(unique(Species)))) %>% select(miRNA_Family,Sets) %>% unique()
+
+#make another upset 
+MRE_shared_upset<-ggplot(data=MRE_upset_list,aes(x=Sets)) +
+    geom_bar() +
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1) +
+    scale_x_upset(n_intersections = 6) +
+    #labs(title="Genes and Isoform level cluster categories")+
+    #scale_y_continuous(breaks = NULL, lim = c(0, 5000), name = "")+
+    theme_minimal()+
+  ylim(0,450)+
+  theme(axis.title = element_blank())
+suppressWarnings(print(MRE_shared_upset))
+
+
+bsgMRE_upset_list<-Unified_circMREs_miRNA_Flatten %>% filter(Distinct_to_Offset=="Yes") %>% select(Species,miRNA_Family) %>% unique() %>% group_by(miRNA_Family) %>% mutate(Sets=list(sort(unique(Species)))) %>% select(miRNA_Family,Sets) %>% unique()
+
+#make another upset 
+bsgMRE_shared_upset<-ggplot(data=bsgMRE_upset_list,aes(x=Sets)) +
+    geom_bar() +
+    geom_text(stat='count', aes(label=after_stat(count)), vjust=-1) +
+    scale_x_upset(n_intersections = 6) +
+    #labs(title="Genes and Isoform level cluster categories")+
+    #scale_y_continuous(breaks = NULL, lim = c(0, 5000), name = "")+
+    theme_minimal()+
+  ylim(0,450)+
+  theme(axis.title = element_blank())
+suppressWarnings(print(bsgMRE_shared_upset))
+
+
+```
+
+```{r extract some summary stats for narrative text and generate upset plots for figures}
+
+
+#circs with MREs across treatments
+
+circ_mre_treatment<-annotated_full_clustered_circs_miRNA_added %>% filter(!is.na(miRNA_Acc.)) %>% select(New_circ_ID,sample_prefix,Treatment,miRNA_Acc.) %>% unique()
+
+length(unique(circ_mre_treatment$New_circ_ID))
+length(unique(circ_mre_treatment$miRNA_Acc.))
+
+
+circ_mre_treatment_cons<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% filter(max(rep_count)>2) %>% unique()
+
+#Generate lists of different conserved treatment circRNAs for venn diagram construction: 
+Lj_full_conserved<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% filter(rep_count>2) %>% unique() %>% select(New_circ_ID,Treatment,rep_count) %>% unique()
+#only keeps it if it's in at least 3 reps of a given treatment
+
+length(unique(Lj_full_conserved$New_circ_ID))
+
+Hn_cons_vs_all<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% filter(!(Treatment=="High Nutrient"&rep_count<=2)) %>% unique()
+
+Ln_cons_vs_all<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% filter(!(Treatment=="Low Nutrient"&rep_count<=2)) %>% unique()
+
+Rhiz_cons_vs_all<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% filter(!(Treatment=="Rhiz"&rep_count<=2)) %>% unique()
+  
+
+#openxlsx::write.xlsx(x=export_list, file = "~/Documents/Grad_School/Research/CircRNA/ComputationalWork/LnF_bsgMRE_Comparisons/251230_circMRE_treatment_conservation2.xlsx")
+
+
+#circs with bsgMREs across treatments
+circ_mre_treatment<-annotated_full_clustered_circs_miRNA_added %>% filter(!is.na(miRNA_Acc.)) %>% select(New_circ_ID,sample_prefix,Treatment,miRNA_Acc.) %>% unique()
+
+
+
+#Number of bsgMREs
+
+bsgMRE_lj_filt<-Unified_circMREs_miRNA_Flatten %>% filter(Distinct_to_Offset=="Yes",Species=="Lj")
+length(unique(bsgMRE_lj_filt$circRNA_ID))
+length(unique(bsgMRE_lj_filt$miRNA_Acc.))
+
+bsgMRE_Os_filt<-Unified_circMREs_miRNA_Flatten %>% filter(Distinct_to_Offset=="Yes",Species=="Os")
+length(unique(bsgMRE_Os_filt$circRNA_ID))
+length(unique(bsgMRE_Os_filt$miRNA_Acc.))
+
+bsgMRE_At_filt<-Unified_circMREs_miRNA_Flatten %>% filter(Distinct_to_Offset=="Yes",Species=="At")
+length(unique(bsgMRE_At_filt$circRNA_ID))
+length(unique(bsgMRE_At_filt$miRNA_Acc.))
+
+
+circ_bsgmre_treatment<-annotated_full_clustered_circs_miRNA_added %>% filter(!is.na(miRNA_Acc.), Distinct_to_Offset=="Yes") %>% select(New_circ_ID,sample_prefix,Treatment,miRNA_Acc.) %>% unique()
+
+circ_bsgmre_treatment_cons<-circ_bsgmre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% mutate(TrtCount=n_distinct(Treatment)) %>% filter(min(rep_count)>2,TrtCount==3) %>% unique()
+
+
+circ_bsgmre_treatment_cons_Spec<-circ_bsgmre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% mutate(TrtCount=n_distinct(Treatment)) %>% filter(TrtCount==1,rep_count>2)
+
+
+circ_mre_treatment_cons_Spec<-circ_mre_treatment %>% group_by(New_circ_ID,Treatment) %>% mutate(rep_count=n_distinct(sample_prefix)) %>% ungroup() %>% group_by(New_circ_ID) %>% select(!sample_prefix & !miRNA_Acc.) %>% mutate(TrtCount=n_distinct(Treatment)) %>% filter(TrtCount==1,rep_count>2)
+
+
+export_list<-list("Only_conserved"=Lj_full_conserved,"Hn_cons_vs_all"=Hn_cons_vs_all,"Ln_cons_vs_all"=Ln_cons_vs_all,"Rhiz_cons_vs_all"=Rhiz_cons_vs_all, "conserved_bsgMRE"=circ_bsgmre_treatment_cons,"bsgMRE_cons_and_specific"=circ_bsgmre_treatment_cons_Spec)
+
+
+openxlsx::write.xlsx(x=export_list, file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/251230_circMRE_treatment_conservation2.xlsx",google_drive_prefix))
+
+
+```
+```{r}
+unified_MRE_for_export<-Unified_circMREs_miRNA_Flatten %>% select(Species,circRNA_ID,miRNA_Acc.,miRNA_Family,Multiplicity,Expectation,"bsgMRE"=Distinct_to_Offset)
+
+mre_comp_exp<-list("Lj_Os_At_circs_with_MRE"=unified_MRE_for_export,"Lj_circ_PsRNAtargetV2_results"=circ_MRE_psRNA,"Os_circ_PsRNAtargetV2_results"=Os_circ_MRE_psRNA,"At_circ_PsRNAtargetV2_results"=At_circ_MRE_psRNA)
+
+openxlsx::write.xlsx(x=mre_comp_exp,file = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/260115_Circ_MRE_Lj_Os_At_Comp.xlsx",google_drive_prefix))
+
+```
+
+
+```{r Determine whether there is a higher than expected number of circRNAs expressed from CSP genes compared to a random selection of other genes}
+#load in csp gene list
+csp_gene_list<-read.csv(file="CSP_Genelist.csv",header = T,sep = "\t")
+#Load in list of all genes (from GTF file)
+
+read_gtf <- function(file) {
+  
+  require(tidyverse)
+  cnames <- c("seqname","source","feature","start","end","score","strand","frame","attribute")
+  
+  # read in raw gtf as tsv and remove comment rows
+  messy <- read_tsv(file, col_names = cnames, comment = "#")
+  
+  # get the unique attribute types
+  # this assumes there are no spaces in the attribute names
+  att_names <- 
+    select(messy, attribute) |>
+    apply(MARGIN = 1, FUN = str_split, pattern = '"; ') |>
+    unlist() |> trimws() |> trimws(whitespace = ";") |>
+    sub(pattern = " .*$", replacement =  "") |> unique()
+  
+  att_names <- att_names[att_names != ""]
+    
+  # for each attribute type, create column
+  # apply over gtf to fill in rows where attribute type is found
+  for (att in att_names) {
+    
+    colatt <- apply(messy, MARGIN = 1, function(x) {
+
+      var <- str_extract(string = x[9],
+                         pattern = sprintf('";\\s+%1$s[^;]+|^%1$s[^;]+;[^"]+"', att)) |> 
+        trimws(whitespace = '["; ]+', which = 'left') |>
+        str_extract('(?<=")[^"]+(?=")')
+      
+    })
+    
+    messy <- messy |> add_column("{att}" := colatt)
+    
+  }
+  
+  # remove original attribute column
+  select(messy, -c(attribute))
+  
+}
+
+Lotus_japonicus_Gtf_agat_convert<-read_gtf("~/Documents/Grad_School/Research/CircRNA/ComputationalWork/Reference_Genomes/Lotus/Lotusjaponicus_Gifu_v1.3_predictedProteins.agat.convert.sorted.gtf")
+
+Lotus_japonicus_Gtf_agat_convert_genes<-Lotus_japonicus_Gtf_agat_convert %>% filter(feature=="gene")
+
+#We have 62 genes in the CSP list
+
+#We have 30585 genes in this lotus annotation
+lj_genes<-unique(Lotus_japonicus_Gtf_agat_convert_genes$gene_id)
+length(lj_genes)
+
+#We have 5444 unique genes in the circRNA set
+length(unique(annotated_full_clustered_circs$gene_id))
+sum(is.na(annotated_full_clustered_circs$gene_id))
+#12400 circRNA observations lack a gene id
+
+#unique gene circ treatment, remove NA and "n/a" from gene_id column
+uni_gct<-annotated_full_clustered_circs %>% select(gene_id,New_circ_ID,Treatment) %>%  filter(!is.na(gene_id)) %>%  filter(gene_id!="n/a") %>% unique()
+#circRNAs with gene ids
+length(unique(uni_gct$New_circ_ID))
+#12254
+length(unique(annotated_full_clustered_circs$New_circ_ID))
+#17043
+
+
+#12254 out of 17043 unique circRNAs have an assigned gene ID
+
+#For a given random set of 61 gene IDs what is the expected number of circRNAs observed, and what is their treatment distribution.
+set.seed(42)
+gene_sample<-sample(lj_genes,size = 61,replace = F)
+circs_in_sample<-uni_gct %>% filter(gene_id %in% gene_sample)
+#Get counts for the number of unique circRNAs
+length(unique(circs_in_sample$New_circ_ID))
+
+circ_counts_sim<-data.frame()
+#Run a for loop with 1000 iterations and capture all of the numbers of unique circRNAs
+for( i in 1:10000){
+  gene_sample<-sample(lj_genes,size = 61,replace = F)
+  circs_in_sample<-uni_gct %>% filter(gene_id %in% gene_sample)
+#Get counts for the number of unique circRNAs
+  x<-length(unique(circs_in_sample$New_circ_ID))
+  row<-data.frame("index"=i,"num_circs"=x)
+  circ_counts_sim<-dplyr::bind_rows(row,circ_counts_sim)
+}
+
+
+
+circ_csp<-uni_gct %>% filter(gene_id %in% csp_gene_list$gene_id)
+length(unique(circ_csp$New_circ_ID))
+#101 circRNAs are expressed from CSP genes
+
+#Calculate lamda (The average number of circRNAs across all genes)
+#To calculate lambda we need to write a function that for a given gene counts the number of circRNAs
+circCount<-function(gene,circ_df=uni_gct){
+  circ_csp<-circ_df %>% filter(gene_id %in% gene)
+  return(length(unique(circ_csp$New_circ_ID)))
+}
+
+#Calculate the number of circs for all genes
+gene_circ_counts<-data.frame("gene_id"=lj_genes)
+gene_circ_counts$circ_count<-unlist(lapply(X = gene_circ_counts$gene_id,FUN = circCount))
+#This is the calculation for average circs per gene - which is not what we want
+#lambda<-mean(gene_circ_counts$circ_count)
+#What we want is the average circs per set of 62 random genes
+lambda_62<-mean(circ_counts_sim$num_circs)
+#
+plot_distribution<-ggplot(data=circ_counts_sim)+ 
+  geom_density(aes(x=num_circs))+
+  geom_vline(xintercept =lambda_62, color="darkgrey",linewidth = 1)+
+  annotate("text",x=lambda_62+25,y=.04,color="darkgrey",label=deparse(bquote(bar(x)==.(format(lambda_62,digits=2)))),parse=T)+
+  geom_vline(xintercept =length(unique(circ_csp$New_circ_ID)), color="red",linewidth = 1)+
+  annotate("text",x=length(unique(circ_csp$New_circ_ID))+80,y=.03,color="red",label=sprintf("%s circRNAs expressed from\n symbiosis-related genes",length(unique(circ_csp$New_circ_ID))))+
+  xlab(label="number of circRNAs in sets of randomly sampled genes\n (10000 samples of 61 genes)")+
+  theme_classic()
+
+plot_distribution
+
+#Poi_probability_csp<-(1- ppois(length(unique(circ_csp$New_circ_ID)), lambda = lambda_62,log.p = T))
+
+#save plot
+ggsave(
+  filename="symbiosis_enrichment_from_subsampling.png",
+  plot = plot_distribution,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 100, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+```
+

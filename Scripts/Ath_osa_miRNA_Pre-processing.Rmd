@@ -1,0 +1,70 @@
+---
+title: "ath_osa_miRNA_pre-processing.rmd"
+author: "Asa Budnick"
+date: "2025-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r ciri-vis sequence import, offset, and export}
+#library(ShortRead)
+library(ggplot2)
+library(stringr)
+library(openxlsx)
+
+#Load in circRNA IDs and sequence information from Chu 2021 supplementary file TableS1-S12;
+google_drive_prefix<-"~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/"
+
+
+#Table S2 is rice circRNAs
+Os_circs<-read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S2",startRow = 3)
+
+
+
+#Table S8 is arabidopsis circRNAs
+Ath_circs<-read.xlsx(xlsxFile = sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/Chu2021_SupplementTables.xlsx",google_drive_prefix),sheet = "Table S8",startRow = 3)
+
+#Many of these circRNAs have multiple full length sequences - some up to 50+ . . . also some circRNAs are very similar in terms of genomic position. 
+
+#For now we will only process the first sequence for each circRNA and won't condense the circRNAs based on genomic window
+
+#Reformat dataframes, create offsets and export fastas
+Os_circs_reformat<-Os_circs %>% select(circ_ID=`circRNA_name.(PlantcircBase)`,`details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`) %>% tidyr::separate(col = `details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`,into = c("transcript_length","circ_Exons","Sequence"),sep = ";") %>% unique()
+
+At_circs_reformat<-Ath_circs %>% select(circ_ID=`circRNA_name.(PlantcircBase)`,`details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`) %>% tidyr::separate(col = `details_of_full_length_infomation.(transcript_length;.circRNA_exons;.sequence)`,into = c("transcript_length","circ_Exons","Sequence"),sep = ";") %>% unique()
+
+
+OS_offset_seq<-paste(substr(Os_circs_reformat$Sequence,start = 41, stop = nchar(Os_circs_reformat$Sequence)),substr(Os_circs_reformat$Sequence,start = 1, stop = 40))
+Ath_offset_seq<-paste(substr(At_circs_reformat$Sequence,start = 41, stop = nchar(At_circs_reformat$Sequence)),substr(At_circs_reformat$Sequence,start = 1, stop = 40))
+
+Os_Offset_seqs_DF<-cbind.data.frame(Os_circs_reformat$circ_ID,OS_offset_seq)
+colnames(Os_Offset_seqs_DF)<-c("circ_ID","Sequence")
+Os_Offset_seqs_DF$circ_ID<-paste0(Os_Offset_seqs_DF$circ_ID, " OFFSET")
+
+At_Offset_seqs_DF<-cbind.data.frame(At_circs_reformat$circ_ID,Ath_offset_seq)
+colnames(At_Offset_seqs_DF)<-c("circ_ID","Sequence")
+At_Offset_seqs_DF$circ_ID<-paste0(At_Offset_seqs_DF$circ_ID, " OFFSET")
+
+#merge the original with the offset and write as fasta
+Os_Seqs_merged_DF<-rbind(Os_circs_reformat[,c(1,4)], Os_Offset_seqs_DF)
+
+At_Seqs_merged_DF<-rbind(At_circs_reformat[,c(1,4)], At_Offset_seqs_DF)
+
+#export 
+OS_combined_mod_fasta <- character(nrow(Os_Seqs_merged_DF) * 2)
+OS_combined_mod_fasta[c(TRUE, FALSE)] <- paste0(">", Os_Seqs_merged_DF$circ_ID)
+OS_combined_mod_fasta[c(FALSE, TRUE)] <- Os_Seqs_merged_DF$Sequence
+writeLines(OS_combined_mod_fasta,sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/OS_Circ_with-OFFSET.fa",google_drive_prefix))
+
+
+At_combined_mod_fasta <- character(nrow(At_Seqs_merged_DF) * 2)
+At_combined_mod_fasta[c(TRUE, FALSE)] <- paste0(">", At_Seqs_merged_DF$circ_ID)
+At_combined_mod_fasta[c(FALSE, TRUE)] <- At_Seqs_merged_DF$Sequence
+writeLines(At_combined_mod_fasta,sprintf("%sSederoff Lab/Lotus & Friends/revision analysis/miRNA/LnF_bsgMRE_Comparisons/At_Circ_with-OFFSET.fa",google_drive_prefix))
+
+
+```

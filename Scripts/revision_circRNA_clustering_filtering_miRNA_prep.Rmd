@@ -1,0 +1,304 @@
+---
+title: "Revison_circRNA_clustering_miRNA_prep"
+author: "Delecia U"
+date: "2025-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Overview: This is the first R-script analysis file. It's meant to collect and cluster circRNA results from CIRI-full and CLEAR outputs. It will also generate fasta files used for miRNA binding site prediction and secondary structure analysis. 
+
+Step 1: Import CIRI-vis, CIRI, and CLEAR files;
+Step 2: standardize tables, and cluster circRNAs
+
+```{r Import Combined CIRI-full files}
+#CIRI-full Sample Names
+VIS_prefixes<-list.files(path = "~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CIRI")[-9]
+VIS<-matrix(ncol=12,nrow=0)
+for( i in 1:length(VIS_prefixes)){
+  temp<-read.csv(file = paste("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CIRI/",VIS_prefixes[i],"/stdir/stout.list",sep=""),header = T, sep = "\t")
+  temp$sample_prefix=VIS_prefixes[i]
+  VIS<-rbind.data.frame(temp,VIS)
+}
+#above works until it hits a file that wasn't originally there 
+```
+
+
+
+```{r read in new CIRI results}
+
+NEW_CIRI_Files<-list.files(path = "~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CIRI", recursive=T, pattern=".+\\.ciri$")
+CIRI_results<-matrix(ncol=13,nrow=0)
+for( i in 1:length(NEW_CIRI_Files)){
+  temp<-read.csv(file = paste("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CIRI/",NEW_CIRI_Files[i],sep=""),header = T, sep = "\t")
+  temp$sample_prefix=VIS_prefixes[i]
+  CIRI_results<-rbind.data.frame(temp,CIRI_results)
+}
+
+```
+
+```{r read in New CLEAR results}
+#modify to read in quant files instead of quant annot because quant annot has problem with comma in exon sizes. 
+
+#NEW_CLEAR_files<-list.files(path = "~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/RNAseq/Data analysis/new_combined/CircRNA/CLEAR/quant_annot/")
+
+CLEAR_files<-list.files(path = "~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CLEAR/")
+
+
+
+#NEW_CLEAR_CORRECTED_PREFIX<-gsub(x=NEW_CLEAR_files,pattern="_.+",replacement="")
+#NEW_CLEAR_CORRECTED_PREFIX<-gsub(x=NEW_CLEAR_CORRECTED_PREFIX, pattern = "([[:alpha:]]+)([[:digit:]]+)",replacement="\\2\\1")
+
+#NEW_CLEAR_CORRECTED_PREFIX<-toupper(NEW_CLEAR_CORRECTED_PREFIX)
+library(stringr)
+#need to match the corrected prefix to append last letter
+#NEW_CLEAR_Final_PREFIX<-VIS_new_prefixes[match(NEW_CLEAR_CORRECTED_PREFIX, str_sub(string =VIS_new_prefixes,end =-2))]
+
+CLEAR<-matrix(nrow = 0,ncol=21)
+  
+for( i in 1:length(CLEAR_files)){
+    temp<-read.csv(file = paste("~/Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CLEAR/",CLEAR_files[i],"/quant.txt",sep=""),sep="\t",header = F,col.names = c("chrom",
+    "start",
+    "end",
+    "name",
+    "score",
+    "strand",
+    "thickStart",
+    "thickEnd",
+    "itemRgb",
+    "exonCount",
+    "exonSizes",
+    "exonOffsets",
+    "readNumber",
+    "circType",
+    "geneName",
+    "isoformName",
+    "index",
+    "flankIntron",
+    "FPBcirc",
+    "FPBlinear",
+    "CIRCscore"))
+  temp$sample_prefix<-CLEAR_files[i]
+  CLEAR<-rbind.data.frame(temp,CLEAR)
+}
+
+```
+
+
+```{r Harmonize dataframes and combine into a single set}
+CLEAR$Analysis<-"CLEAR"
+CIRI_results$Analysis<-"CIRI2"
+VIS$Analysis<-"CIRI-vis"
+CIRI<-CIRI_results
+colnames(CLEAR)
+colnames(CIRI)
+colnames(VIS)
+
+#First unify CIRI and VIS
+colnames(VIS)[2]<-"circRNA_ID"
+colnames(VIS)[c(3,4,5)]<-c("chr","circRNA_start","circRNA_end")
+
+library(dplyr)
+CIRIVIS<-bind_rows(CIRI,VIS)
+
+#Now combine CLEAR with CIRIVIS
+colnames(CIRIVIS)
+
+#first circRNA_ID needs to be created as CLEAR doesn't have one 
+CIRIVIS$circRNA_ID<-gsub(CIRIVIS$circRNA_ID,pattern="\\|", replacement="-")
+CLEAR$circRNA_ID<-paste(CLEAR$chrom,":",CLEAR$start,"-",CLEAR$end,sep="")
+colnames(CLEAR)[c(1,2,3)]<-c("chr","circRNA_start","circRNA_end")
+#Remove unnecessary clear columns
+CLEAR<-CLEAR[,-c(4,5,7,8,9)]
+colnames(CLEAR)[9]<-"circRNA_type"
+colnames(CLEAR)[10]<-"gene_id"
+#merge in CLEAR and CIRIVIS
+Full_Data<-bind_rows(CLEAR,CIRIVIS)
+```
+
+
+Now that datasets are merged clustering can be done
+
+```{r Cluster}
+#Pull circRNA_ID, chr, start, and stop
+
+Clust_Format2<-unique(Full_Data[,c(19,1:3)])
+colnames(Clust_Format2)<-c("circRNA_ID","chrom","start","end")
+
+#NOTE there is one circRNA: LjG1.1_chr3:20833016-20833255 which for one sample 3RRa has an ID but does not have start and end sequences - this traces back to the original import so is either an import error or a problem in the underlying dataset. For now removing and ignoring it. #this was likely caused by an overflow issue where ciri-vis stopped running before finishing completely - resolved by rerunning CIRI-vis on 3RRa limiting displayed final sequences to only those with at least 3 supporting reads.  
+Clust_Format2<-Clust_Format2[complete.cases(Clust_Format2$start),]
+rownames(Clust_Format2)<-make.names(Clust_Format2$circRNA_ID) # need to make.names in order to allow the unusual characters in circRNA IDs
+
+Clust_Format<-Clust_Format2[,-1]
+
+
+forloop_cluster_dataframe<-data.frame()
+for( chr in unique(Clust_Format$chrom)){
+  chromset<-Clust_Format[Clust_Format$chrom==chr,2:3]
+  testdist<-dist(chromset,  method = "manhattan")
+  heirarch_clust <- hclust(testdist, method="complete",)
+  trimmed_clust <- cutree(heirarch_clust, h=10)
+  names_list<-split(names(trimmed_clust), trimmed_clust)
+  forloop_cluster_dataframe<-dplyr::bind_rows(forloop_cluster_dataframe,plyr::ldply(names_list,rbind))
+}
+
+#format names back to original circIDs 
+cluster_renamed<-as.data.frame(lapply(forloop_cluster_dataframe, FUN = function(x) sub("(^.*_.*)\\.(\\d*)\\.(\\d*)", "\\1:\\2-\\3",x)))
+
+cluster_renamed$New_circ_ID<-with(cluster_renamed, paste0(X1,",",X2,",",X3,",",X4,",",X5,",",X6))
+cluster_renamed$New_circ_ID<-gsub(",NA","",cluster_renamed$New_circ_ID)
+```
+
+```{r label circRNAs in the full dataset with the names of the clusters}
+library(tidyr)
+cluster_renamed2<- cluster_renamed[,-1] %>% 
+  pivot_longer(cols = !New_circ_ID, names_to = "Original_ID")
+cluster_renamed2<-cluster_renamed2[complete.cases(cluster_renamed2),]
+
+Full_Clustered<-merge(cluster_renamed2[,-2],Full_Data, by.y="circRNA_ID",by.x="value", all.y=T)
+colnames(Full_Clustered)[1]<-"circRNA_ID"
+```
+
+```{r prepare sample metadata}
+#make sample metadata table to be merged in with labels
+library(stringr)
+#Sample prefix, treatment, replicate, Tissue, 
+sample_metadata<-as.data.frame(unique(Full_Clustered$sample_prefix))
+colnames(sample_metadata)<-"sample_prefix"
+sample_metadata$sample_number<-str_extract(string=sample_metadata$sample_prefix,pattern = "[[:digit:]]+")
+sample_metadata$Round<-substr(x=sample_metadata$sample_prefix, start=nchar(sample_metadata$sample_prefix), stop =nchar(sample_metadata$sample_prefix))
+
+sample_metadata$Treatment<-0
+sample_metadata$Treatment[which(grepl(pattern="Hn", x=sample_metadata$sample_prefix))]<-"High Nutrient"
+
+sample_metadata$Treatment[which(grepl(pattern="Ln", x=sample_metadata$sample_prefix))]<-"Low Nutrient"
+
+sample_metadata$Treatment[which(grepl(pattern="Rhiz", x=sample_metadata$sample_prefix))]<-"Rhiz"
+
+#sample_metadata$Treatment[which(grepl(pattern="A", x=sample_metadata$sample_prefix))]<-"AM"
+
+
+
+
+
+
+READ_COUNTS_combined<-openxlsx::read.xlsx(xlsxFile="~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/reads_suppl.xlsx",sheet = "Total_reads")
+
+
+
+READ_COUNTS_combined$sample_number<-str_extract(string=READ_COUNTS_combined$Sample,pattern = "[[:digit:]]+")
+
+sample_metadata<-merge(sample_metadata,READ_COUNTS_combined[,-c(1,2,3)],all.x = T,by="sample_number")
+
+colnames(sample_metadata)[5]<-c("sample_trimmed_reads")
+
+
+```
+
+
+```{r merge metadata into clustered}
+Full_Clustered_Meta<-merge(sample_metadata,Full_Clustered, by="sample_prefix",all.y=T)
+#removing read names column before writing out to the drive
+openxlsx::write.xlsx(x=Full_Clustered_Meta[,-29],file = "~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218AB_Full_clustered_metadata_circRNAs.xlsx")
+```
+
+The next two chunks take info from the .anno filies from CIRI-full, compiles them, extracts the start, end, and gene_id to be matched with the full circRNA dataset
+
+```{r }
+
+
+library(data.table)
+library(dplyr)
+
+# Set the path to the directory containing your .anno files
+dir_path <- "~/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CIRI-Full_anno"
+
+#test_file<-read.table(file="~/abudnic@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/RNAseq/Data analysis/new_combined/CircRNA/CIRI-Full_anno/12RRc_merge_circRNA_detail.anno",sep="",fill = T)
+
+# List all .anno files in the directory
+anno_files <- list.files(path = dir_path, pattern = "\\.anno$", full.names = TRUE)
+
+# Initialize an empty dataframe to store all the data
+all_anno_data <- matrix(nrow = 0,ncol=10)
+
+# Loop through each .anno file
+for (file_path in anno_files) {
+  # Read the .anno file
+  print(file_path)
+  anno_data <- read.table(file = file_path, sep = "", header = T, fill = TRUE)
+  
+  # Bind the current dataframe to the overall dataframe
+  all_anno_data <- rbind.data.frame(anno_data,all_anno_data)
+}
+
+# Now all_anno_data contains data from all .anno files with cleaned RO_reads_information and BSJ_reads_information
+
+colnames(all_anno_data) <- c("circRNA_ID", "Chr", "circRNA_start", "circRNA_end", "GTF-annotated_exon", "Cirexon", "BSJ_reads_information", "RO_reads_information", "not_sure","gene_id")
+
+
+all_anno_data$gene_id[all_anno_data$gene_id == ""] <- NA
+all_anno_data$gene_id[all_anno_data$gene_id == "n/a"] <- NA
+
+
+
+```
+
+```{r}
+
+
+merged<-merge(Full_Clustered_Meta, 
+              unique(all_anno_data[complete.cases(all_anno_data[,c(3,4,10)]),c(3,4,10)])
+                                                            
+              ,by.x=c("circRNA_start","circRNA_end"),by.y=c("circRNA_start","circRNA_end"),all.x = T,all.y=F)
+
+merged[which(merged$Analysis=="CIRI-vis"),17]<-merged[which(merged$Analysis=="CIRI-vis"),37]
+
+Full_Clustered_Meta<-merged[,-37]
+
+colnames(Full_Clustered_Meta)[17]<-"gene_id"
+
+
+
+```
+
+Adding products to all of the circRNAs with gene_IDs
+
+
+```{r}
+
+
+# Read the .gff3 file
+gff <- read.delim("/Users/asabudnick/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/NCSU_InROOT/Commensal Experiment/Data - seq files/Linear RNA /featurecounts & DEGs/Lotus/Lotusjaponicus_Gifu_v1.2_allPredictedGenes.gff3", skip=10, header=F) #reading in .gff file
+#creating separate columns
+gff <- separate(data=gff,col=V9,into=c("isoformId","Product"),sep=";human_readable_description=") 
+#removing extra info (everything after ; and 'ID=')
+gff$isoformId <- gsub("\\;.*", "", sub("ID=", "", gff$isoformId))
+gff$isoformId <- gsub("\\..*", "", gff$isoformId)
+#remove repeated products
+gffProduct <- gff %>% 
+  dplyr::group_by(isoformId) %>% 
+  dplyr::summarize(Product=toString(sort(unique(Product)))) #creating new dataframe with all product info for each gene
+#removing the comma after geneids from CIRI2
+Full_Clustered_Meta$gene_id <- gsub(",\\s*$", "", Full_Clustered_Meta$gene_id)
+# Step 2: Replace commas between gene IDs with a semicolon
+Full_Clustered_Meta$gene_id <- gsub(",", ";", Full_Clustered_Meta$gene_id)
+
+# Function to match products for multiple gene IDs
+match_products <- function(gene_id, product_df) {
+  split_gene_ids <- str_split(gene_id, ";")[[1]]
+  products <- gffProduct %>% filter(isoformId %in% split_gene_ids) %>% pull(Product)
+  paste(products, collapse = ";")
+}
+# Apply the function to create the Product column
+Full_Clustered_Meta <- Full_Clustered_Meta %>%
+  mutate(Product = sapply(gene_id, match_products, product_df = gffProduct))
+
+#save (without read IDs as some are over 32K characters)
+openxlsx::write.xlsx(x= Full_Clustered_Meta [,-29],file = "/Users/asabudnick/Library/CloudStorage/GoogleDrive-abudnic@ncsu.edu/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/251218AB_annotated_Full_clustered_metadata_circRNAs.xlsx")
+
+```
+
+

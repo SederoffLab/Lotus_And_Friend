@@ -1,0 +1,563 @@
+---
+title: "revision_Mloti"
+author: "Delecia U"
+date: "2025-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+
+```
+
+
+```{r - revision analysis}
+
+#Create merged file with script from DESeq2 code
+
+## Setting working directory to folder containing fcounts output from fcounts A_M.loti output. We really want to use part B out put, so this is a test.
+folder <- "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts/Mloti_wrong_gtf"
+
+# Create your list of file names from above and put them in the correct order by sample ID
+files <- c( "Hn_13.Ml_mapped_counts.txt", "Hn_14.Ml_mapped_counts.txt", "Hn_15.Ml_mapped_counts.txt", "Ln_4.Ml_mapped_counts.txt","Ln_7.Ml_mapped_counts.txt", "Ln_10.Ml_mapped_counts.txt", "Ln_16.Ml_mapped_counts.txt", "Ln_17.Ml_mapped_counts.txt", "Rhiz_3.Ml_mapped_counts.txt", "Rhiz_9.Ml_mapped_counts.txt","Rhiz_12.Ml_mapped_counts.txt","Rhiz_22.Ml_mapped_counts.txt", "Rhiz_23.Ml_mapped_counts.txt")
+
+files_full <- file.path(path.expand(folder), files)
+
+#Merge the first two files and store 
+file1<-read.table(files_full[1], skip=1, header=T)
+file2<-read.table(files_full[2], skip=1, header=T)
+out.file = merge(file1[,c(1,7)], file2[,c(1,7)], by=c("Geneid"),all=T)
+
+#Check the first 6 lines with:
+head(out.file)
+
+# For loop to merge the remaining files
+for(i in 3:length(files))
+{
+  file = read.table(files_full[i], skip=1, header=T)
+  out.file <- merge(out.file, file[,c(1,7)], by=c("Geneid"),all=T)
+}
+View(out.file)
+
+
+#Rename Geneid (first column) - called 'Geneid' by featureCounts but these are actually exon-level counts
+#did not do this
+#out.file=rename(out.file, exonId=Geneid)
+
+head(out.file)
+```
+
+
+```{r}
+
+
+# Prepare other dataframe to add annotation/gene product info
+#transfer annotation file to *your computer* and change to that path
+setwd("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts/ref_genome") 
+#reading in .gff file
+gtf <- read.delim("genomic.gtf", skip=9, header=F)
+#creating separate columns
+gtf <- separate(data=gtf,col=V9,into=c("GeneID","gbkey_function"),sep="gbkey") 
+gtf <- separate(data=gtf,gbkey_function,into=c("gbkey","product"),sep="product") 
+gtf <- separate(data=gtf,GeneID,into=c("GeneID","transcriptID"),sep="; ") 
+
+#removing extra info (everything after ; and 'gene_id ')
+gtf$GeneID <- gsub("\\;.*", "", sub("gene_id ", "", gtf$GeneID)) 
+
+#removing those that do not have an entry in the product column
+gtf <- subset(gtf, !is.na(product) & product != "")
+
+
+#creating new dataframe with all product info for each gene
+gtfProduct <- gtf %>% group_by(GeneID) %>% summarize(product=toString(sort(unique(product)))) 
+#add new column to out.file to match to gffProduct
+out.file$product<-gtfProduct[match(out.file$Geneid,gtfProduct$GeneID),]$product
+
+head(gtf$GeneID)
+head(out.file$Geneid)
+
+# change working directory to where you want the output to go
+setwd("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts")
+#save merged gene-level, bacteria do not have exons, counts output file - change file name to describe your samples
+write.csv(out.file, file = "M.loti_fCounts_geneLevel_ALL.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+rawcounts_wide<-read.csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts/M.loti_fCounts_geneLevel_ALL.csv")
+
+colnames(rawcounts_wide) <- c("Geneid", "Hn_13", "Hn_14", "Hn_15", "Ln_4", "Ln_7", "Ln_10", "Ln_16", "Ln_17", "Rhiz_3", "Rhiz_9", "Rhiz_12", "Rhiz_22", "Rhiz_23", "Product")
+
+rawcounts <- rawcounts_wide %>%
+  pivot_longer(
+    cols = -c(Geneid, Product),
+    names_to = "sample",
+    values_to = "raw_count"
+  ) %>%
+  mutate(treatment = sub("_.*", "", sample),
+         log10_count = log10(raw_count + 1))
+
+colnames(rawcounts) <- c("Geneid", "Product", "Sample","raw_count", "Treatment", "log10_count")
+
+#nodB
+# Gene of interest: nodB
+gene_id <- "R7A2020_29365"  # Replace with ID for nodB
+
+
+nodB_data <- rawcounts %>%
+  filter(Geneid == gene_id) %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_raw = mean(raw_count, na.rm = TRUE),  # keep mean raw counts too
+    mean_log10 = mean(log10_count, na.rm = TRUE),
+    sd_log10 = sd(log10_count, na.rm = TRUE)
+  ) %>%
+  # apply cutoff: only keep if mean raw count ≥ 100
+  mutate(mean_log10 = ifelse(mean_raw >= 100, mean_log10, NA),
+         sd_log10 = ifelse(mean_raw >= 100, sd_log10, NA))
+
+
+
+nodB_data$Treatment <- factor(nodB_data$Treatment, levels = c("Hn", "Ln", "Rhiz"))
+
+treatment_colors <- c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")
+
+
+p_nodB<-ggplot(nodB_data, aes(x = Treatment, y = mean_log10, fill = Treatment)) +
+  geom_bar(stat = "identity", width=1) +
+  geom_errorbar(aes(ymin = mean_log10 - sd_log10, ymax = mean_log10 + sd_log10),
+                width = 0.2) +
+  scale_fill_manual(values = treatment_colors) +
+  theme_classic() +
+  labs(title = expression(italic("nodB")),
+       x = "Treatment",
+       y = expression(log[10]~"(Raw Counts + 1)")) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold.italic", size = 10),
+    axis.title.y = element_text( size = 10),
+    axis.title.x = element_blank (),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text(hjust = 0.5, size = 8),
+    legend.position = "none"
+  )
+
+p_nodB
+
+
+#nifA2
+gene_id <-"R7A2020_30605"
+
+
+nifA2_data <- rawcounts %>%
+  filter(Geneid == gene_id) %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_raw = mean(raw_count, na.rm = TRUE),  # keep mean raw counts too
+    mean_log10 = mean(log10_count, na.rm = TRUE),
+    sd_log10 = sd(log10_count, na.rm = TRUE)
+  ) %>%
+  # apply cutoff: only keep if mean raw count ≥ 100
+  mutate(mean_log10 = ifelse(mean_raw >= 100, mean_log10, NA),
+         sd_log10 = ifelse(mean_raw >= 100, sd_log10, NA))
+
+
+nifA2_data$Treatment <- factor(nifA2_data$Treatment, levels = c("Hn", "Ln", "Rhiz"))
+
+treatment_colors <- c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")
+
+# Plot
+p_nifA2<-
+ggplot(nifA2_data, aes(x = Treatment, y = mean_log10, fill = Treatment)) +
+  geom_bar(stat = "identity", width=1) +
+  geom_errorbar(aes(ymin = mean_log10 - sd_log10, ymax = mean_log10 + sd_log10),
+                width = 0.2) +
+  scale_fill_manual(values = treatment_colors) +
+  theme_classic() +
+  labs(title = expression(italic("nifA2")),
+       x = "Treatment",
+       y = expression(log[10]~"(Raw Counts + 1)")) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold.italic", size = 10),
+    axis.title.y = element_blank (),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text( hjust = 0.5, size = 8),
+    legend.position = "none"
+  )
+
+p_nifA2
+
+
+#fix
+
+gene_id <- "R7A2020_30585"  # Replace with ID for nodB
+
+
+fixA1_data <- rawcounts %>%
+  filter(Geneid == gene_id) %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_raw = mean(raw_count, na.rm = TRUE),  # keep mean raw counts too
+    mean_log10 = mean(log10_count, na.rm = TRUE),
+    sd_log10 = sd(log10_count, na.rm = TRUE)
+  ) %>%
+  # apply cutoff: only keep if mean raw count ≥ 100
+  mutate(mean_log10 = ifelse(mean_raw >= 200, mean_log10, NA),
+         sd_log10 = ifelse(mean_raw >= 200, sd_log10, NA))
+
+
+
+fixA1_data$Treatment <- factor(fixA1_data$Treatment, levels = c("Hn", "Ln", "Rhiz"))
+
+treatment_colors <- c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")
+
+# Plot
+p_fixA1<-
+ ggplot(fixA1_data, aes(x = Treatment, y = mean_log10, fill = Treatment)) +
+  geom_bar(stat = "identity", width=1) +
+  geom_errorbar(aes(ymin = mean_log10 - sd_log10, ymax = mean_log10 + sd_log10),
+                width = 0.2) +
+  scale_fill_manual(values = treatment_colors) +
+  theme_classic() +
+  labs(title = expression(italic("fixA1")),
+       x = "Treatment",
+       y = expression(log[10]~"(Raw Counts + 1)")) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold.italic", size = 10),
+    axis.title.y = element_blank (),
+    axis.title.x = element_blank (),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text( hjust = 0.5, size = 8),
+    legend.position = "none"
+  )
+
+p_fixA1
+
+ #flgK
+
+gene_id <- "R7A2020_09960"  # Replace with ID for nodB
+
+
+flgK_data <- rawcounts %>%
+  filter(Geneid == gene_id) %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_raw = mean(raw_count, na.rm = TRUE),  # keep mean raw counts too
+    mean_log10 = mean(log10_count, na.rm = TRUE),
+    sd_log10 = sd(log10_count, na.rm = TRUE)
+  ) %>%
+  # apply cutoff: only keep if mean raw count ≥ 100
+  mutate(mean_log10 = ifelse(mean_raw >= 100, mean_log10, NA),
+         sd_log10 = ifelse(mean_raw >= 100, sd_log10, NA))
+
+
+flgK_data$Treatment <- factor(flgK_data$Treatment, levels = c ("Hn", "Ln", "Rhiz"))
+
+treatment_colors <- c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")
+
+# Plot
+p_flgK <- 
+ggplot(flgK_data, aes(x = Treatment, y = mean_log10, fill = Treatment)) +
+  geom_bar(stat = "identity", width=1) +
+  geom_errorbar(aes(ymin = mean_log10 - sd_log10, ymax = mean_log10 + sd_log10),
+                width = 0.2) +
+  scale_fill_manual(values = treatment_colors) +
+  theme_classic() +
+  labs(title = expression(italic("flgK")),
+       x = "Treatment",
+       y = expression(log[10]~"(Raw Counts + 1)",
+      fill = "Treatment"))+
+  theme(
+   plot.title = element_text(hjust = 0.5, face = "bold.italic", size = 10),
+    axis.title.y = element_blank (),
+    axis.title.x = element_blank (),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text( hjust = 0.5, size = 8),
+    legend.position = "none",
+    legend.key.size = unit(0.5, "lines"))
+
+
+p_flgK
+
+
+
+
+
+```
+
+```{r Patch work}
+
+#p_nodB, p_nifA2, p_fixA1, p_flgK
+
+library(cowplot)
+
+# Mloti_plots <- plot_grid(
+#   p_nodB, p_nifA2, p_fixA1, p_flgK,
+#   labels = c("D", "E", "F", "G"),
+#   nrow = 1
+# )
+# 
+# p_nifA2 <- p_nifA2 + theme(axis.title.y = element_blank())
+# p_fixA1 <- p_fixA1 + theme(axis.title.y = element_blank())
+# p_flgK <- p_flgK + theme(axis.title.y = element_blank())
+# 
+# Mloti_plots <- plot_grid(
+#   p_nodB, p_nifA2, p_fixA1, p_flgK,
+#   labels = c("D", "E", "F", "G"),
+#   nrow = 1
+# )
+
+# p_nodB <- p_nodB + theme(
+#   axis.title.x = element_blank(),
+#   legend.position = "none",
+#   plot.title = element_text(hjust = 0.5, face = "bold.italic", size = 10 ),
+#   axis.text = element_text (size = 10),
+#   axis.title.y = element_text(10))
+# 
+# 
+# p_nifA2 <- p_nifA2 + theme(
+#   axis.title.x = element_blank(),
+#   axis.title.y = element_blank(),
+#   legend.position = "none",
+#   plot.title = element_text(hjust = 0.5, "bold.italic", size = 10),
+#   axis.text = element_text (size = 10))
+# 
+# 
+# p_fixA1 <- p_fixA1 + theme(
+#   axis.title.x = element_blank(),
+#   axis.title.y = element_blank(),
+#   legend.position = "none",
+#   plot.title = element_text(hjust = 0.5, "bold.italic", size = 10),
+#   axis.text = element_text (size = 10))
+# 
+# p_flgK <- p_flgK + theme(
+#   axis.title.x = element_blank(),
+#   axis.title.y = element_blank(),
+#   legend.position = "none",
+#   plot.title = element_text(hjust = 0.5, "bold.italic", size = 10),
+#   axis.text = element_text (size = 10))
+
+library(cowplot)
+
+legend_shared <- get_legend(
+  p_flgK + theme(legend.position = "bottom",
+                  legend.title = element_text(size = 10),
+                  legend.text  = element_text(size = 8)))
+
+
+Mloti_plots <- plot_grid(
+  p_nodB, p_nifA2, p_fixA1, p_flgK,
+  labels = c("E", "F", "G", "H"),
+  nrow = 1
+)
+
+final_4panel <- plot_grid(
+  Mloti_plots,
+  legend_shared,
+  ncol = 1,
+rel_heights = c(1, 0.15)   # Adjust legend size
+)
+
+
+
+saveRDS(final_4panel, file ="Mloti_panel.rds")
+
+
+
+```
+
+
+
+```{r nod genes graph}
+
+# Filter and reshape data
+selected_samples <- c("Rhiz_3", "Rhiz_9", "Rhiz_12", "Rhiz_22", "Rhiz_23")
+
+
+# Define selected genes with nicknames
+gene_nicknames <- data.frame(
+  Geneid = c("R7A2020_29405","R7A2020_29365","R7A2020_29400","R7A2020_29395","R7A2020_29415","R7A2020_30645","R7A2020_13765"),
+  nickname = c("nodA", "nodB", "nodC", "nodI", "nodS", "nodZ", "NfeD")
+)
+
+# Filter data
+nod_data <- rawcounts_wide %>%
+  filter(Geneid %in% gene_nicknames$Geneid) %>%  # Select only genes of interest
+  dplyr::select(Geneid, all_of(selected_samples)) %>%  # Keep only selected sample columns
+  pivot_longer(cols = -Geneid, names_to = "sample", values_to = "CPM") %>%  # Reshape data
+  group_by(Geneid) %>%
+  summarise(mean_CPM = mean(CPM, na.rm = TRUE),
+            sd_CPM = sd(CPM, na.rm = TRUE)) %>%
+  left_join(gene_nicknames, by = "Geneid") %>%
+  mutate(
+    nickname = factor(
+      nickname,
+      levels = c("nodA", "nodB", "nodC", "nodI", "nodS", "nodZ", "NfeD")
+    )
+  )   # Add nicknames
+
+
+
+
+nod<-ggplot(nod_data, aes(x = nickname, y = mean_CPM)) +
+  geom_bar(stat = "identity", fill = "hotpink") +  # Pink bars
+  geom_errorbar(aes(ymin = pmax(mean_CPM - sd_CPM, 0), 
+                    ymax = mean_CPM + sd_CPM), 
+                width = 0.2) +  # Error bars constrained to non-negative values
+  theme_classic() +  # Remove grid lines
+  theme(
+    axis.title = element_text(size = 10),  # Axis titles bold, size 16
+    axis.text = element_text(size = 8)  # Axis text size 14
+  ) +
+  labs(x = "Gene", y = "Mean Expression\n(CPM)") 
+
+
+```
+
+
+```{r nif genes}
+
+nif_gene_nicknames <- data.frame(
+  Geneid = c("R7A2020_30700","R7A2020_30605","R7A2020_30610","R7A2020_30330","R7A2020_30320","R7A2020_30335","R7A2020_30325","R7A2020_30315","R7A2020_30575"),
+  nickname = c("nifA1","nifA2","nifB","nifD","nifE","nifH","nifK","nifN","nifS")
+)
+
+# Filter data
+nif_data <- rawcounts_wide %>%
+  filter(Geneid %in% nif_gene_nicknames$Geneid) %>%  # Select only genes of interest
+  dplyr::select(Geneid, all_of(selected_samples)) %>%  # Keep only selected sample columns
+  pivot_longer(cols = -Geneid, names_to = "sample", values_to = "CPM") %>%  # Reshape data
+  group_by(Geneid) %>%
+  summarise(mean_CPM = mean(CPM, na.rm = TRUE),
+            sd_CPM = sd(CPM, na.rm = TRUE)) %>%
+  left_join(nif_gene_nicknames, by = "Geneid")  # Add nicknames
+
+
+nif <- ggplot(nif_data, aes(x = nickname, y = mean_CPM)) +
+  geom_bar(stat = "identity", fill = "hotpink") +  # Pink bars
+  geom_errorbar(aes(ymin = pmax(mean_CPM - sd_CPM, 0), 
+                    ymax = mean_CPM + sd_CPM), 
+                width = 0.2) +  # Error bars constrained to non-negative values
+  theme_classic() +  # Remove grid lines
+  theme(
+    axis.title = element_text(size = 10),  # Axis titles bold, size 16
+    axis.text = element_text(size = 8)  # Axis text size 14
+  ) +
+  labs(x = "Gene", y = "Mean Expression\n(CPM)") 
+
+
+
+```
+
+
+```{r fix genes}
+
+fix_gene_nicknames <- data.frame(
+  Geneid = c("R7A2020_30585","R7A2020_07750","R7A2020_30590","R7A2020_07745","R7A2020_28810","R7A2020_28135","R7A2020_28825"),
+  nickname = c("fixA1","fixA2","fixB1","fixB2","fixH1","fixJ","fixQ")
+)
+
+# Filter data
+fix_data <- rawcounts_wide %>%
+  filter(Geneid %in% fix_gene_nicknames$Geneid) %>%  # Select only genes of interest
+  dplyr::select(Geneid, all_of(selected_samples)) %>%  # Keep only selected sample columns
+  pivot_longer(cols = -Geneid, names_to = "sample", values_to = "CPM") %>%  # Reshape data
+  group_by(Geneid) %>%
+  summarise(mean_CPM = mean(CPM, na.rm = TRUE),
+            sd_CPM = sd(CPM, na.rm = TRUE)) %>%
+  left_join(fix_gene_nicknames, by = "Geneid")  # Add nicknames
+
+
+fix <- ggplot(fix_data, aes(x = nickname, y = mean_CPM)) +
+  geom_bar(stat = "identity", fill = "hotpink") +  # Pink bars
+  geom_errorbar(aes(ymin = pmax(mean_CPM - sd_CPM, 0), 
+                    ymax = mean_CPM + sd_CPM), 
+                width = 0.2) +  # Error bars constrained to non-negative values
+  theme_classic() +  # Remove grid lines
+  theme(
+    axis.title = element_text(size = 10),  # Axis titles bold, size 16
+    axis.text = element_text(size = 8)  # Axis text size 14
+  ) +
+  labs(x = "Gene", y = "Mean Expression\n(CPM)") 
+
+
+
+
+```
+
+```{r flagellin}
+
+
+flagellin_gene_nicknames <- data.frame(
+  Geneid = c("R7A2020_17450","R7A2020_31480","R7A2020_31475","R7A2020_17470","R7A2020_10040","R7A2020_09960","R7A2020_10095","R7A2020_10085","R7A2020_09990"),
+  nickname = c("CpaB","CpaD","CpaE","CpaF","FlgA","FlgK","FliN","MotA","MotB")
+)
+
+# Filter data
+flagellin_data <- rawcounts_wide %>%
+  filter(Geneid %in% flagellin_gene_nicknames$Geneid) %>%  # Select only genes of interest
+  dplyr::select(Geneid, all_of(selected_samples)) %>%  # Keep only selected sample columns
+  pivot_longer(cols = -Geneid, names_to = "sample", values_to = "CPM") %>%  # Reshape data
+  group_by(Geneid) %>%
+  summarise(mean_CPM = mean(CPM, na.rm = TRUE),
+            sd_CPM = sd(CPM, na.rm = TRUE)) %>%
+  left_join(flagellin_gene_nicknames, by = "Geneid")  # Add nicknames
+
+
+flagellin <- ggplot(flagellin_data, aes(x = nickname, y = mean_CPM)) +
+  geom_bar(stat = "identity", fill = "hotpink") +  # Pink bars
+  geom_errorbar(aes(ymin = pmax(mean_CPM - sd_CPM, 0), 
+                    ymax = mean_CPM + sd_CPM), 
+                width = 0.2) +  # Error bars constrained to non-negative values
+  theme_classic() +  # Remove grid lines
+  theme(
+    axis.title = element_text(size = 10),  # Axis titles bold, size 16
+    axis.text = element_text(size = 8)  # Axis text size 14
+  ) +
+  labs(x = "Gene", y = "Mean Expression\n(CPM)") 
+
+
+```
+
+
+```{r Patch work}
+
+#nod, nif, fix, flagellin
+
+library(cowplot)
+
+Mloti_sup_top <- plot_grid(
+  nod, nif, 
+  labels = c("A", "B"),
+  nrow = 1
+)
+
+Mloti_sup_bottom <- plot_grid(
+  fix, flagellin, 
+  labels = c("C", "D"),
+  nrow = 1
+)
+
+Mloti_sup <- plot_grid(
+  Mloti_sup_top,
+  Mloti_sup_bottom,
+  ncol = 1
+)
+
+ggsave(
+  filename="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/featurecounts/Mloti_sup_fig.png",
+  plot = Mloti_sup,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 112.5, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white",
+)
+
+```

@@ -1,0 +1,595 @@
+---
+title: "rev_phenotyping"
+author: "Delecia U"
+date: "2025-12-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r Reading in excel file with data}
+
+Phenotyping <-openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/Revised_phenotyping.xlsx")
+
+#backfilling the NAs due to the merged cells
+Phenotyping <- Phenotyping %>%
+  fill(Sample_name,Treatment,tube_name, Sample_number)
+
+Phenotyping_filtered <- Phenotyping %>%
+  select(Treatment, Sample_name, tube_name,root_length)
+
+Phenotyping_branches <- Phenotyping %>%
+  select(Treatment, Sample_name, tube_name,branches)
+
+Phenotyping_shoot_height <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/Revised_phenotyping.xlsx", 
+    sheet = "Shoot_height")
+
+
+Phenotyping_shoot_height <- Phenotyping_shoot_height %>%
+  fill(Sample_name,Treatment,tube_name)
+
+
+Phenotyping_shoots <- Phenotyping_shoot_height %>%
+  select(Treatment, Sample_name, tube_name, Shoot_height)
+
+Phenotyping_nodules <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/Revised_phenotyping.xlsx", 
+    sheet = "Nodules")
+
+Phenotyping_nodules <- Phenotyping_nodules %>%
+  fill(Sample_name,Treatment,tube_name)
+
+Phenotyping_nodules <- Phenotyping_nodules %>%
+  select(Treatment, Sample_name, tube_name, nodules)
+
+
+```
+
+
+
+```{r ORIGINAL - Performing anova test and Tukey test based on averages and grouped by treatment}
+
+avg_stats <- Phenotyping_filtered %>%
+  group_by(Sample_name, Treatment) %>%
+  dplyr::summarise(Average_Root_Length = mean(root_length, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_stats$Treatment <- gsub("^\\d+_", "", avg_stats$Treatment)
+
+summary_stats_treatment <- avg_stats %>%
+  group_by(Treatment) %>%  # Group by Treatment
+  summarise(
+    Min = min(Average_Root_Length, na.rm = TRUE),
+    Q1 = quantile(Average_Root_Length, 0.25, na.rm = TRUE),
+    Median = median(Average_Root_Length, na.rm = TRUE),
+    Q3 = quantile(Average_Root_Length, 0.75, na.rm = TRUE),
+    Max = max(Average_Root_Length, na.rm = TRUE),
+    IQR = IQR(Average_Root_Length, na.rm = TRUE),
+    Outliers = list(Average_Root_Length[Average_Root_Length < Q1 - 1.5 * IQR | Average_Root_Length > Q3 + 1.5 * IQR])
+  ) %>%
+  ungroup() 
+
+# Run a one-way ANOVA test to check for differences between treatments
+anova_results <- aov(Average_Root_Length ~ Treatment, data = avg_stats)
+
+# Print the ANOVA summary
+summary(anova_results)
+
+#             Df Sum Sq Mean Sq F value Pr(>F)  
+# Treatment    2  3.062  1.5312   5.781 0.0215 *
+# Residuals   10  2.649  0.2649                 
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1 
+
+# Tukey HSD test to determine pairwise differences between treatments
+tukey_results <- TukeyHSD(anova_results)
+
+# Print the Tukey results
+print(tukey_results)
+
+#  Tukey multiple comparisons of means
+#     95% family-wise confidence level
+# 
+# Fit: aov(formula = Average_root_length ~ Treatment, data = avg_stats)
+# 
+#              diff       lwr        upr     p adj
+# Ln-Hn   -0.5587533 -1.589063  0.4715567 0.3375058
+# Rhiz-Hn -1.2464733 -2.276783 -0.2161633 0.0194597
+# Rhiz-Ln -0.6877200 -1.579995  0.2045547 0.1367642
+
+
+
+
+```
+
+
+```{r ORIGINAL - Visualizing the anova results and the Tukey plot}
+
+library(ggplot2)
+library(ggsignif)
+library(ggpubr)
+
+avg_stats$Treatment <- factor(avg_stats$Treatment, levels = c("Hn", "Ln", "Rhiz"))
+
+anova_p_value <- summary(anova_results)[[1]]$`Pr(>F)`[1]
+
+anova_root <- ggplot(avg_stats, aes(x = Treatment, y = Average_Root_Length, fill = Treatment)) +
+  geom_boxplot() +
+  labs(
+       y = "Average Root Length",
+       x = "Treatment") +
+  scale_fill_manual(values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")) + 
+  scale_x_discrete(limits = c("Hn", "Ln", "Rhiz"),
+                   labels = c(
+      "Hn" = "High\nNutrient",
+      "Ln" = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    )) +  # Set the order of treatments
+  theme_classic() +
+  theme(axis.text.x = element_text(size=8),
+       axis.text.y = element_text(size=8 ),
+       axis.title.x = element_text(size=10),
+       axis.title.y = element_text(size=10),
+       legend.position = "none")+ # Rotate x-axis labels
+  annotate("text", 
+         x = 2.5, 
+         y = max(avg_stats$Average_Root_Length) * 1.05, 
+         label = paste0("'ANOVA: p = ", round(anova_p_value, 4), "'"),
+         parse = TRUE,
+         size = 3, 
+         color = "black", 
+         hjust = 0.5,
+         vjust= 3)  # Make the text smaller and move to the right
+
+
+library(multcompView)
+
+ #Extract pairwise comparisons and letters
+tukey_letters <- multcompLetters4(anova_results, tukey_results)$Treatment
+tukey_labels <- as.data.frame(tukey_letters$Letters)
+colnames(tukey_labels) <- c("Label")
+tukey_labels$Treatment <- rownames(tukey_labels)
+
+# Add letters to the plot
+sig_root <- ggplot(avg_stats, aes(x = Treatment, y = Average_Root_Length, fill = Treatment)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")) +
+  scale_x_discrete(
+                   labels = c(
+      "Hn" = "High\nNutrient",
+      "Ln" = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    ))+
+  geom_text(
+    data = tukey_labels,
+    aes(x = Treatment, y = max(avg_stats$Average_Root_Length) + 0.5, label = Label),
+    inherit.aes = FALSE,
+    size = 4,
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average Root Length"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size=8),
+    axis.text.y = element_text(size=8),
+    axis.title.x = element_text(size=10),
+    axis.title.y = element_text(size=10),
+    legend.position = "none")
+  
+#creating one plot
+
+root_length_plot <- ggplot(
+  avg_stats,
+  aes(x = Treatment, y = Average_Root_Length, fill = Treatment)
+) +
+  geom_boxplot() +
+
+  ## Tukey letters
+  geom_text(
+    data = tukey_labels,
+    aes(
+      x = Treatment,
+      y = max(avg_stats$Average_Root_Length) * 1.08,
+      label = Label
+    ),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+
+  ## ANOVA p-value
+  # annotate(
+  #   "text",
+  #   x = 2,
+  #   y = max(avg_stats$Average_Root_Length) * 1.18,
+  #   label = paste0("ANOVA: p = ", signif(anova_p_value, 3)),
+  #   size = 3
+  # ) +
+
+  scale_fill_manual(
+    values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Hn"   = "High\nNutrient",
+      "Ln"   = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    )
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average\nRoot Length"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x  = element_text(size = 8),
+    axis.text.y  = element_text(size = 8),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    legend.position = "none"
+  )
+
+
+```
+
+
+```{r ORIGINAL - Branch numbers}
+
+avg_stats_branches <- Phenotyping_branches %>%
+  group_by(Sample_name, Treatment) %>%
+  summarise(Average_Numb_Branches = mean(branches, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_stats_branches$Treatment <- gsub("^\\d+_", "", avg_stats_branches$Treatment)
+
+summary_stats_treatment <- avg_stats_branches %>%
+  group_by(Treatment) %>%  # Group by Treatment
+  summarise(
+    Min = min(Average_Numb_Branches, na.rm = TRUE),
+    Q1 = quantile(Average_Numb_Branches, 0.25, na.rm = TRUE),
+    Median = median(Average_Numb_Branches, na.rm = TRUE),
+    Q3 = quantile(Average_Numb_Branches, 0.75, na.rm = TRUE),
+    Max = max(Average_Numb_Branches, na.rm = TRUE),
+    IQR = IQR(Average_Numb_Branches, na.rm = TRUE),
+    Outliers = list(Average_Numb_Branches[Average_Numb_Branches < Q1 - 1.5 * IQR | Average_Numb_Branches > Q3 + 1.5 * IQR])
+  ) %>%
+  ungroup() 
+
+# Run a one-way ANOVA test to check for differences between treatments
+anova_results <- aov(Average_Numb_Branches ~ Treatment, data = avg_stats_branches)
+
+# Print the ANOVA summary
+summary(anova_results)
+
+# > summary(anova_results)
+#             Df Sum Sq Mean Sq F value Pr(>F)
+# Treatment    3  1.401   0.467   0.383  0.767
+# Residuals   20 24.400   1.220
+
+#Not significant
+
+anova_p_value <- summary(anova_results)[[1]]$`Pr(>F)`[1]  
+
+
+# Create a boxplot with annotation for non-significance
+lat_roots <- ggplot(avg_stats_branches, aes(x = Treatment, y = Average_Numb_Branches, fill = Treatment)) +
+  geom_boxplot() +
+  labs(title = NULL,
+       y = "Average Number\nof Lateral Roots",
+       x = "Treatment") +
+  scale_fill_manual(values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")) + 
+  scale_x_discrete(limits = c("Hn", "Ln", "Rhiz"),
+                   labels = c(
+      "Hn" = "High\nNutrient",
+      "Ln" = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    )) + 
+  # Set the order of treatments
+  theme_classic() +
+  theme(axis.text.x = element_text(size=8),
+        axis.text.y = element_text(size = 8),
+        axis.title.x = element_text(size=10),
+        axis.title.y = element_text(size=10),
+  legend.position = "none")
+
+
+
+```
+
+
+```{r Shoot height}
+
+avg_stats_shoots <- Phenotyping_shoots %>%
+  group_by(Sample_name, Treatment) %>%
+  summarise(Average_shoot_height = mean(Shoot_height, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_stats_shoots$Treatment <- gsub("^\\d+_", "", avg_stats_shoots$Treatment)
+
+summary_stats_treatment <- avg_stats_shoots %>%
+  group_by(Treatment) %>%  # Group by Treatment
+  summarise(
+    Min = min(Average_shoot_height, na.rm = TRUE),
+    Q1 = quantile(Average_shoot_height, 0.25, na.rm = TRUE),
+    Median = median(Average_shoot_height, na.rm = TRUE),
+    Q3 = quantile(Average_shoot_height, 0.75, na.rm = TRUE),
+    Max = max(Average_shoot_height, na.rm = TRUE),
+    IQR = IQR(Average_shoot_height, na.rm = TRUE),
+    Outliers = list(Average_shoot_height[Average_shoot_height < Q1 - 1.5 * IQR | Average_shoot_height > Q3 + 1.5 * IQR])
+  ) %>%
+  ungroup() 
+
+# Run a one-way ANOVA test to check for differences between treatments
+anova_results <- aov(Average_shoot_height ~ Treatment, data = avg_stats_shoots)
+
+# Print the ANOVA summary
+summary(anova_results)
+
+#             Df Sum Sq Mean Sq F value   Pr(>F)    
+# Treatment    2 19.489   9.744   159.3 2.61e-08 ***
+# Residuals   10  0.612   0.061                     
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+# Tukey HSD test to determine pairwise differences between treatments
+tukey_results <- TukeyHSD(anova_results)
+
+# Print the Tukey results
+print(tukey_results)
+
+#              diff        lwr       upr    p adj
+# Ln-Hn   -3.201667 -3.6967891 -2.706544 0.00e+00
+# Rhiz-Hn -2.296667 -2.7917891 -1.801544 5.00e-07
+# Rhiz-Ln  0.905000  0.4762114  1.333789 4.69e-04
+
+avg_stats_shoots$Treatment <- factor(avg_stats_shoots$Treatment, levels = c("Hn", "Ln", "Rhiz"))
+
+anova_p_value <- summary(anova_results)[[1]]$`Pr(>F)`[1]  
+
+
+shoot_height <- ggplot(avg_stats_shoots, aes(x = Treatment, y = Average_shoot_height, fill = Treatment)) +
+  geom_boxplot() +
+  labs(
+       y = "Average\nShoot Height",
+       x = "Treatment") +
+  scale_fill_manual(values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")) + 
+  scale_x_discrete(limits = c("Hn", "Ln", "Rhiz"),
+                   labels = c(
+      "Hn" = "High\nNutrient",
+      "Ln" = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    )) +  # Set the order of treatments
+  theme_classic() +
+  theme(axis.text.x = element_text(size=8),
+        axis.text.y = element_text(size = 8),
+        axis.title = element_text(size=10),
+        legend.position = "none") +  # Rotate x-axis labels
+  # Add the p-value annotation
+  annotate("text", x = 2.5, y = max(avg_stats_shoots$Average_shoot_height) * 1.05, 
+           label = paste0("'ANOVA: p =", format(anova_p_value,scientific = TRUE, digits = 4),"'"), parse =TRUE, 
+           size = 3, color = "black", hjust = .5, vjust= 3) 
+
+
+
+library(multcompView)
+
+ #Extract pairwise comparisons and letters
+tukey_letters <- multcompLetters4(anova_results, tukey_results)$Treatment
+tukey_labels <- as.data.frame(tukey_letters$Letters)
+colnames(tukey_labels) <- c("Label")
+tukey_labels$Treatment <- rownames(tukey_labels)
+
+# Add letters to the plot
+sig_shoot <- ggplot(avg_stats_shoots, aes(x = Treatment, y = Average_shoot_height, fill = Treatment)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")) +
+  scale_x_discrete(
+                   labels = c(
+      "Hn" = "High\nNutrient",
+      "Ln" = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    ))+
+  geom_text(
+    data = tukey_labels,
+    aes(x = Treatment, y = max(avg_stats_shoots$Average_shoot_height) + 0.5, label = Label),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average Shoot Height"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size=8),
+    axis.text.y = element_text(size = 8),
+    axis.title = element_text(size = 10),
+    legend.position = "none"
+  )
+
+shoot_height_plot <- ggplot(
+  avg_stats_shoots,
+  aes(x = Treatment, y = Average_shoot_height, fill = Treatment)
+) +
+  geom_boxplot() +
+
+  ## Tukey letters
+  geom_text(
+    data = tukey_labels,
+    aes(
+      x = Treatment,
+      y = max(avg_stats_shoots$Average_shoot_height) * 1.08,
+      label = Label
+    ),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+
+  scale_fill_manual(
+    values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Hn"   = "High\nNutrient",
+      "Ln"   = "Low\nNutrient",
+      "Rhiz" = "Rhizobia"
+    )
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average\nShoot Height"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x  = element_text(size = 8),
+    axis.text.y  = element_text(size = 8),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    legend.position = "none"
+  )
+
+```
+
+
+```{r Nodules}
+
+avg_stats_nodules <- Phenotyping_nodules %>%
+  group_by(Sample_name) %>%
+  summarise(Average_numb_nodules = mean(nodules, na.rm = TRUE), 
+    SE_nodules = sd(nodules, na.rm = TRUE) / sqrt(n())) %>%
+  ungroup() 
+
+avg_stats_nodules$Sample_name <- factor(avg_stats_nodules$Sample_name, levels = c("3_Rhiz", "9_Rhiz", "12_Rhiz", "22_Rhiz", "23_Rhiz"))
+
+ggplot(avg_stats_nodules, aes(x = Sample_name, y = Average_numb_nodules)) +
+  geom_bar(stat = "identity", fill = "hotpink") +  
+  geom_text(aes(label = round(Average_numb_nodules, 1)), 
+            vjust = 1.5,  
+            size = 5, 
+            color = "white",
+            fontface = "bold") +  
+  theme_classic() +
+  labs(
+    title = NULL,
+    x = "Sample",
+    y = "Average Number\nof Pink Nodules"
+  ) +
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, hjust = 1),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+  )
+
+# Plot with error bars
+nodules<- ggplot(avg_stats_nodules, aes(x = Sample_name, y = Average_numb_nodules)) +
+  geom_bar(stat = "identity", fill = "hotpink") +
+  geom_errorbar(
+    aes(ymin = Average_numb_nodules - SE_nodules,
+        ymax = Average_numb_nodules + SE_nodules),
+    width = 0.2,
+    color = "black"
+  ) +
+  geom_text(aes(label = round(Average_numb_nodules, 1)),
+            vjust = 5,
+            fontface = "bold",
+            size = 4,
+            color = "white") +
+  scale_x_discrete(labels = c(
+  "3_Rhiz" = "Rhiz3",
+  "9_Rhiz" = "Rhiz9",
+  "12_Rhiz" = "Rhiz12",
+  "22_Rhiz" = "Rhiz22",
+  "23_Rhiz" = "Rhiz23"
+))+
+  theme_classic() +
+  labs(
+    title = NULL,
+    x = "Sample",
+    y = "Average Number\nof Pink Nodules"
+  ) +
+  theme(
+    axis.title = element_text(size = 10),
+    axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 8, hjust = 1)
+  )
+
+
+
+
+avg_stats_nodules %>%
+  select(Sample_name, Average_numb_nodules, SE_nodules) %>%
+  arrange(Sample_name)
+
+
+
+
+summary_stats_sample <- Phenotyping_nodules %>%
+  group_by(Sample_name) %>%  # Group by Treatment
+  summarise(
+    Min = min(nodules, na.rm = TRUE),
+    Q1 = quantile(nodules, 0.25, na.rm = TRUE),
+    Median = median(nodules, na.rm = TRUE),
+    Q3 = quantile(nodules, 0.75, na.rm = TRUE),
+    Max = max(nodules, na.rm = TRUE),
+    IQR = IQR(nodules, na.rm = TRUE),
+    Outliers = list(nodules[nodules < Q1 - 1.5 * IQR | nodules > Q3 + 1.5 * IQR])
+  ) %>%
+  ungroup() 
+
+# Reordering Sample column
+summary_stats_sample$Sample_name <- factor(summary_stats_sample$Sample_name, levels = c("3_Rhiz", "9_Rhiz", "12_Rhiz", "22_Rhiz", "23_Rhiz"))
+
+
+```
+
+
+```{r}
+
+library(cowplot)
+
+
+pheno_sup_top <-plot_grid(
+  root_length_plot, lat_roots,
+  labels = c("A", "B"),
+  nrow = 1,              # side-by-side
+  align = "hv",          # align horizontally and vertically
+  rel_widths = c(1, 1) # optional: adjust plot widths if needed
+)
+
+pheno_sup_middle <-plot_grid(
+  shoot_height_plot, nodules,
+  labels = c("C", "D"),
+  nrow = 1,              # side-by-side
+  align = "hv",          # align horizontally and vertically
+  rel_widths = c(1, 1) # optional: adjust plot widths if needed
+)
+
+
+pheno_fig <- plot_grid(
+  pheno_sup_top,
+  pheno_sup_middle,
+  ncol = 1,
+  rel_heights = c(1.2, 1.2)  # Adjust as needed (0.08 is ~8% height spacer)
+)
+
+ggsave(
+  filename="~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/pheno_sup_fig.png",
+  plot = pheno_fig,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 112.5, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white",
+)
+
+
+
+
+```

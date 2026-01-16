@@ -1,0 +1,213 @@
+---
+title: "revision_bbsplit"
+author: "Delecia U"
+date: "2025-11-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ 
+
+
+```{r new combined - Looking at total sequencing reads from all samples output of fastqc after trimming}
+#these numbers are pulled from doing command "zcat Hn_13_R2.clean.fq.gz | wc -l" and dividing that number by 4 
+
+new_stats <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Total_reads_internal_copy.xlsx")
+    
+new_stats$Sample <- factor(new_stats$Sample, levels = new_stats$Sample)
+
+
+
+# Create the bar plot
+total_reads<-ggplot(new_stats, aes(x = Sample, y = Total_reads, fill = Treatment)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")) +
+  labs(x = "Sample", y = "Total Reads After Trimming", title = "") +
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, size = 10),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_text(face = "bold", size = 12),
+        axis.text.y = element_text(size=12),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+print(total_reads)
+
+# avg_reads <- new_stats %>%
+#   group_by(Treatment) %>%
+#   summarize(AverageReads = mean(Total_reads, na.rm = TRUE)) %>%
+#   mutate(Label = paste0(round(AverageReads / 1e6), "M"),
+#          Treatment = factor(Treatment, levels= c("Hn", "Ln", "Rhiz")))
+
+avg_reads <- new_stats %>%
+  group_by(Treatment) %>%
+  summarize(
+    AverageReads = mean(Total_reads, na.rm = TRUE),
+    SE = sd(Total_reads, na.rm = TRUE) / sqrt(n())   # Standard error
+  ) %>%
+  mutate(
+    Label = paste0(round(AverageReads / 1e6), "M"),
+    Treatment = factor(Treatment, levels = c("Hn", "Ln", "Rhiz"))
+  )
+
+
+
+avg_reads_plot<-ggplot(avg_reads, aes(x = Treatment, y = AverageReads, fill = Treatment)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = AverageReads - SE, ymax = AverageReads + SE),
+                width = 0.2, linewidth = 0.8) +
+  scale_fill_manual(values = c("Hn" = "forestgreen", "Ln" = "steelblue", "Rhiz" = "hotpink")) +
+  # geom_text(aes(label = Label), vjust = 2, size = 6) +  # Labels above bars
+  labs(
+    x = "Treatment",
+    y = "Average Total Reads",
+    title = ""
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, size = 14),
+        axis.title.x = element_text(face = "bold", size = 12),
+        axis.title.y = element_text(face = "bold", size = 12),
+        axis.text.y = element_text(size=12),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+print(avg_reads_plot)
+
+# ggsave("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/rev_avg_reads.png", width = 8, height = 6, dpi = 300)  # Adjust width as needed
+ 
+
+ 
+```
+
+
+
+
+#testing Asa's version of import
+```{r Import Bbsplit Reference counts summaries}
+
+dir_path <- "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/bbsplit"
+
+BBsplit_reference_summaries<-list.files(path= dir_path,pattern=".*referenceStats")
+
+BBsplit_summary_df<-data.frame()
+for(File in BBsplit_reference_summaries){
+  #print(File)
+  temp<-NULL
+  temp<-read.csv(file = file.path(dir_path, File), 
+  sep = "\t", header =T,
+  )
+  temp$Sample<-sub("\\.referenceStats$", "", File)
+  BBsplit_summary_df<-rbind.data.frame(BBsplit_summary_df,temp)
+}
+
+                                       
+``` 
+
+```{r Reference Counts}
+
+#Let's start by focusing on unambiguous read counts and also by refining sample identity
+BBsplit_summary_df$Treatment<-str_extract(BBsplit_summary_df$Sample,pattern="^[^_]+")
+# BBsplit_summary_df$Replicate<-str_extract(BBsplit_summary_df$Sample,pattern=".$")
+colnames(BBsplit_summary_df)[1]<-"Genome"
+
+
+BBsplit_summary_df$Genome<-factor(BBsplit_summary_df$Genome, levels = c("Lj","Ml"))
+
+desired_order <- c("Hn_13", "Hn_14", "Hn_15", "Ln_4", "Ln_7", "Ln_10", "Ln_16", "Ln_17", "Rhiz_3", "Rhiz_9", "Rhiz_12", "Rhiz_22", "Rhiz_23")
+
+BBsplit_summary_df$Sample <- factor(BBsplit_summary_df$Sample, levels = desired_order)
+
+all_reads<-ggplot(BBsplit_summary_df, aes(x = Sample, y = unambiguousReads, fill = Genome)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    values = c("Lj" = "#66C2A5", 
+               "Ml" = "#FC8D62"
+
+               ),
+    labels = c("Lj" = "Lotus", 
+               "Ml" = "Rhiz" 
+               )
+  )+
+  scale_y_log10() +  # Apply log10 transformation to the y-axis
+  labs(x = "Sample", y = "Total Reads\nper Organism (log scale)", title = "") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+        axis.text.y = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+
+print(all_reads)
+
+
+
+#Start by making a faceted scatterplot
+bbcounts_plot1<-ggplot(data=BBsplit_summary_df) +
+  geom_point(aes(y=unambiguousReads,x=Treatment, color = Genome)) +
+  facet_wrap(~Genome,scales="free_y")
+bbcounts_plot1
+
+#Also try a logarithmic barplot with error bars:
+BBsplit_summary_df2<-BBsplit_summary_df %>% 
+  dplyr::select(unambiguousReads,Treatment,Genome) %>% 
+  group_by(Treatment,Genome) %>% 
+  summarize(Mean_Reads=mean(unambiguousReads), stdev_reads=sd(unambiguousReads))
+
+BBsplit_summary_df2 <- BBsplit_summary_df2 %>%
+  mutate(
+    Inoculant = case_when(
+      Treatment %in% c("Hn", "Ln") ~ "No Inoculant",
+      Treatment == "Rhiz" ~ "M.loti",
+      TRUE ~ NA_character_   # fallback for unexpected values
+    )
+  )
+
+bbcounts_plot2<-ggplot(BBsplit_summary_df2) +
+  geom_bar(aes(y=Mean_Reads,x=Treatment, fill=Inoculant), position=position_dodge(),stat="identity",alpha=.8)+
+  geom_errorbar(aes(ymin=Mean_Reads-stdev_reads, ymax=Mean_Reads+stdev_reads,x=Treatment), width=.2, position=position_dodge(.9))+
+  facet_wrap(~Genome,scales="free_y",
+             labeller = labeller(Genome = c("Lj" = "Lotus japonicus",
+                                            "Ml" = "M.loti")))+
+  ylab("Mean Mapped Reads")+
+  scale_fill_manual(values = c("No Inoculant" = "grey",
+                               "M.loti" = "hotpink" ))+
+  scale_x_discrete(labels = c(
+  "High Nutrient" = "Hn",
+  "Low Nutrient"  = "Ln",
+  "Rhizobia"      = "Rhiz"
+))+
+  theme_classic()+
+  theme(axis.text.x = element_text(size = 10, hjust=0.5),
+        axis.title = element_text(size = 12),
+        legend.position = "bottom", 
+        strip.background = element_blank(), 
+        strip.text = element_text(face = "bold.italic", size = 12))
+bbcounts_plot2
+
+saveRDS(bbcounts_plot2, file = "~/Documents/GitHub/Lotus_n_Friends/bbsplit.rds")
+
+
+#Do some summary stats for the narrative text 
+
+#Average (and stdev) reads mapped for Lj
+LJ_avg<-BBsplit_summary_df %>% 
+  filter(Genome=="Lj") %>% 
+  dplyr::select(unambiguousReads) %>% 
+  summarize(avg=mean(unambiguousReads),stdev=sd(unambiguousReads))
+
+#Average reads mapped for expected samples of M.loti and R.i
+ML_avg<-BBsplit_summary_df %>% 
+  filter(Genome=="Ml") %>% 
+  filter(Treatment=="Rhiz") %>% 
+  dplyr::select(unambiguousReads) %>% 
+  summarize(avg=mean(unambiguousReads),stdev=sd(unambiguousReads))
+
+write.xlsx(BBsplit_summary_df, file = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/bbsplit/bbsplit.xlsx" )
+
+```
+

@@ -1,0 +1,610 @@
+---
+title: "CSP"
+author: "Delecia U"
+date: "2025-12-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Looking at circRNAs that are related to CSP pathway genes}
+
+#reading in file with the list of CSP genes (annotations and common names)
+library(readxl)
+CSP_genes <- openxlsx::read.xlsx("~/Downloads/Supplemental File 3.12 CSP circs.xlsx")
+
+CSP_genes_clean <- CSP_genes %>%
+  filter(!is.na(gene_id) & gene_id != "")
+
+#reading in file with all circRNAs
+all_circRNAs <- openxlsx::read.xlsx("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/LnF_filtered.xlsx")
+
+
+# library(devtools)
+#  #install_github("jianhong/colorBlindness")
+# library(colorBlindness)
+#  safeColors
+#  availableColors()
+#  colorNames()
+ 
+
+```
+
+
+
+
+
+
+
+```{r filtering circRNAs for these specific genes}
+library(dplyr)
+
+
+CSPrelated_circs <- all_circRNAs %>%
+  semi_join(CSP_genes_clean, by = "gene_id") %>%
+  left_join(CSP_genes_clean %>% 
+              dplyr::select(gene_id, `Gene.name`), by = "gene_id")
+
+names(CSPrelated_circs)[names(CSPrelated_circs) == "Gene.name"] <- "Short_name"
+
+write.csv(CSPrelated_circs, "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/Sym_relatedgenes_circRNAs.csv")
+
+
+# Dot_Plot_prep<-CSPrelated_circs %>%
+#   select(New_circ_ID, gene_id,Treatment,Sample,Analysis,readNumber, `X.junction_reads`, total_exp, Short_name) %>%
+#   unique() %>%
+#   group_by(New_circ_ID,Treatment) %>%
+#   mutate(Replication=n_distinct(Sample)) %>%
+#   ungroup() %>%
+#   group_by(New_circ_ID, Treatment,Sample) %>%
+#   mutate(Read_measurement=mean(c(readNumber,`X.junction_reads`), na.rm=T)) %>%
+#   ungroup() %>%
+#   select(New_circ_ID,gene_id,Treatment,Replication, Read_measurement, Short_name)
+# 
+# 
+# Dot_Plot_prep1 <- Dot_Plot_prep %>%
+#   group_by(gene_id) %>%
+#   mutate(Circ_label = paste0("Circ", dense_rank(New_circ_ID))) %>%
+#   ungroup()
+# 
+# table(Dot_Plot_prep1$Treatment, useNA = "ifany")
+# 
+# Dot_Plot_prep1_part1_shortname <- Dot_Plot_prep1 %>% filter(Short_name %in% unique(Short_name)[1:(length(unique(Short_name))/2)])
+# 
+# Dot_Plot_prep1_part2_shortname <- Dot_Plot_prep1 %>% 
+#   filter(Short_name %in% unique(Short_name)[(length(unique(Short_name))/2 + 1):length(unique(Short_name))])
+# 
+# table(Dot_Plot_prep1_part1_shortname$Treatment, useNA = "ifany")
+# 
+# Dot_Plot_prep1_part1_shortname$Treatment <- factor(
+#   Dot_Plot_prep1_part1_shortname$Treatment,
+#   levels = c("High Nutrient", "Low Nutrient", "Rhiz") # Desired order
+# )
+# 
+# 
+# Dot_Plot_prep1_part2_shortname$Treatment <- factor(
+#   Dot_Plot_prep1_part2_shortname$Treatment,
+#   levels = c("High Nutrient", "Low Nutrient", "Rhiz") # Desired order
+# )
+# 
+# 
+# 
+# Dot_Plot_prep1_part1_shortname <- Dot_Plot_prep1_part1_shortname %>%
+#   mutate(
+#     Treatment = recode_factor(
+#       Treatment,
+#       "High Nutrient" = "Hn",
+#       "Low Nutrient" = "Ln"
+#     )
+#   )
+# 
+# Dot_Plot_prep1_part2_shortname <- Dot_Plot_prep1_part2_shortname %>%
+#   mutate(
+#     Treatment = recode_factor(
+#       Treatment,
+#       "High Nutrient" = "Hn",
+#       "Low Nutrient" = "Ln"
+#     )
+#   )
+# 
+# table(Dot_Plot_prep1_part1_shortname$Treatment, useNA = "ifany")
+# 
+# table(Dot_Plot_prep1_part2_shortname$Treatment, useNA = "ifany")
+
+```
+
+```{r}
+
+
+# Build Dot_Plot_prep
+Dot_Plot_prep <- CSPrelated_circs %>%
+  dplyr::select(
+    New_circ_ID, gene_id, Treatment, Sample, Analysis,
+    readNumber, `X.junction_reads`, total_exp, Short_name
+  ) %>%
+  unique() %>%
+  group_by(New_circ_ID, Treatment) %>%
+  mutate(Replication = n_distinct(Sample)) %>%
+  ungroup() %>%
+  group_by(New_circ_ID, Treatment, Sample) %>%
+  mutate(Read_measurement = mean(c(readNumber, `X.junction_reads`), na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::select(New_circ_ID, gene_id, Treatment, Replication, Read_measurement, Short_name)
+
+
+#Create Dot_Plot_prep1 with circ labels
+
+Dot_Plot_prep1 <- Dot_Plot_prep %>%
+  group_by(gene_id) %>%
+  mutate(Circ_label = paste0("Circ", dense_rank(New_circ_ID))) %>%
+  ungroup()
+
+
+# Split into two halves by Short_name
+
+shortnames <- unique(Dot_Plot_prep1$Short_name)
+half_point <- ceiling(length(shortnames) / 2)
+
+Dot_Plot_prep1_part1_shortname <- Dot_Plot_prep1 %>%
+  filter(Short_name %in% shortnames[1:half_point])
+
+Dot_Plot_prep1_part2_shortname <- Dot_Plot_prep1 %>%
+  filter(Short_name %in% shortnames[(half_point + 1):length(shortnames)])
+
+
+# Recode Treatment BEFORE converting to a factor
+recode_treatment <- function(df) {
+  df %>%
+    mutate(
+      Treatment = recode(
+        Treatment,
+        "High Nutrient" = "Hn",
+        "Low Nutrient" = "Ln",
+        "Rhizobia" = "Rhiz"   # THIS FIXES THE NA PROBLEM
+      ),
+      Treatment = factor(
+        Treatment,
+        levels = c("Hn", "Ln", "Rhiz")
+      )
+    )
+}
+
+Dot_Plot_prep1_part1_shortname <- recode_treatment(Dot_Plot_prep1_part1_shortname)
+Dot_Plot_prep1_part2_shortname <- recode_treatment(Dot_Plot_prep1_part2_shortname)
+
+
+# Check final treatment distributions
+table(Dot_Plot_prep1_part1_shortname$Treatment, useNA = "ifany")
+table(Dot_Plot_prep1_part2_shortname$Treatment, useNA = "ifany")
+
+
+
+
+```
+
+
+
+```{r original plot}
+
+CSP_circs_part1 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part1_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = as.factor(Replication),
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3,
+    color = "forestgreen"
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12, face = "bold"),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom"
+  ) +
+  scale_y_discrete(drop = FALSE, labels = c("Hn", "Ln", "Rhiz")) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual(values = c(16, 17, 15, 3, 18, 8, 11), name = "# of Replicates") +
+  ylab("") +
+  xlab("") +
+  ggtitle("CircRNAs Present in CSP genes (Part 1)")
+
+# Render interactive plot
+interactive_plot <- girafe(ggobj = CSP_circs_part1)
+interactive_plot
+
+
+CSP_circs_part2 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part2_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = as.factor(Replication),
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3,
+    color = "forestgreen"
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12, face = "bold"),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom"
+  ) +
+  scale_y_discrete(drop = FALSE, labels = c("Hn", "Ln", "Rhiz", "AM")) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual(values = c(16, 17, 15, 3, 18, 8, 11), name = "# of Replicates") +
+  ylab("") +
+  xlab("") +
+  ggtitle("CircRNAs Present in CSP genes (Part 2)")
+
+# Render interactive plot
+interactive_plot <- girafe(ggobj = CSP_circs_part2)
+interactive_plot
+
+
+
+
+
+
+```
+
+```{r plots with color and bigger text}
+
+CSP_circs_part1 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part1_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = as.factor(Replication),
+      color = Treatment, # Color dots by Treatment
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, size = 12,  margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "none",
+    # legend.position = "bottom",
+    # legend.text = element_text(size = 12), # Larger legend text
+    # legend.title = element_text(size = 14, face = "bold") # Larger legend title
+  ) +
+  scale_y_discrete(drop = FALSE) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual(values = c(16, 17, 15, 3, 18, 8, 11), name = "# of Replicates") +
+  scale_color_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")) + # Customize colors for treatments
+  ylab("") +
+  xlab("") +
+  ggtitle("")
+
+interactive_plot <- girafe(ggobj = CSP_circs_part1)
+interactive_plot
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CSP_circRNAs_part1_color.pdf",
+  plot = CSP_circs_part1,
+  device = "pdf",
+  width = 8.5,  # Half of a landscape page width
+  height = 5.5, # Maintain aspect ratio
+  units = "in",
+  dpi = 400,
+  limitsize = TRUE
+)
+
+
+
+CSP_circs_part2 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part2_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = as.factor(Replication),
+      color = Treatment, # Color dots by Treatment
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, size = 12, margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12), # Larger legend text
+    legend.title = element_text(size = 14, face = "bold") # Larger legend title
+  ) +
+  scale_y_discrete(drop = FALSE) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual(values = c(16, 17, 15, 3, 18, 8, 11), name = "# of Replicates") +
+  scale_color_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink")) + # Customize colors for treatments
+  guides(color = "none") +
+  ylab("") +
+  xlab("") +
+  ggtitle("")
+
+interactive_plot <- girafe(ggobj = CSP_circs_part2)
+interactive_plot
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/CSP_circRNAs_part2_color.pdf",
+  plot = CSP_circs_part2,
+  device = "pdf",
+  width = 8.5,  # Half of a landscape page width
+  height = 5.5, # Maintain aspect ratio
+  units = "in",
+  dpi = 400,
+  limitsize = TRUE
+)
+
+
+```
+
+
+```{r}
+
+CSP_circs_part1 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part1_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = ifelse(Replication == 1, "Single", "Multiple"),
+      color = Treatment, # Color dots by Treatment
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, size = 12, face = "bold", margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12, face = "bold"),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12), # Larger legend text
+    legend.title = element_text(size = 14, face = "bold") # Larger legend title
+  ) +
+  scale_y_discrete(drop = FALSE) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual( values=c(16,1),
+  name = "Replicates") +
+  scale_color_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink", "AM" = "purple")) + # Customize colors for treatments
+  guides(color = "none") +
+  ylab("") +
+  xlab("") +
+  ggtitle("CircRNAs Present in CSP genes (Part 1)")
+
+interactive_plot <- girafe(ggobj = CSP_circs_part1)
+interactive_plot
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/figures/CSP_circRNAs_part1_color_simple.pdf",
+  plot = CSP_circs_part1,
+  device = "pdf",
+  width = 8.5,  # Half of a landscape page width
+  height = 5.5, # Maintain aspect ratio
+  units = "in",
+  dpi = 400,
+  limitsize = TRUE
+)
+
+
+
+CSP_circs_part2 <- ggplot() +
+  geom_point_interactive(
+    data = Dot_Plot_prep1_part2_shortname,
+    mapping = aes(
+      y = Treatment,
+      x = Circ_label,
+      shape = ifelse(Replication == 1, "Single", "Multiple"),
+      color = Treatment, # Color dots by Treatment
+      tooltip = paste0(New_circ_ID) # Tooltip with circ coordinates
+    ),
+    size = 3
+  ) +
+  facet_grid(~ Short_name, scales = "free", space = "free_x", switch = "both") +
+  theme_bw() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, size = 12, face = "bold", margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "grey", size = .2, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5, size = 12, face = "bold"),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12), # Larger legend text
+    legend.title = element_text(size = 14, face = "bold") # Larger legend title
+  ) +
+  scale_y_discrete(drop = FALSE) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_shape_manual( values =c(16,1),
+  name = "Replicates") +
+  scale_color_manual(values = c("Hn" = "forestgreen" , "Ln" = "steelblue", "Rhiz" = "hotpink", "AM" = "purple")) + # Customize colors for treatments
+  guides(color = "none") +
+  ylab("") +
+  xlab("") +
+  ggtitle("CircRNAs Present in CSP genes (Part 2)")
+
+interactive_plot <- girafe(ggobj = CSP_circs_part2)
+interactive_plot
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/circRNA/figures/CSP_circRNAs_part2_color_simple.pdf",
+  plot = CSP_circs_part2,
+  device = "pdf",
+  width = 8.5,  # Half of a landscape page width
+  height = 5.5, # Maintain aspect ratio
+  units = "in",
+  dpi = 400,
+  limitsize = TRUE
+)
+
+```
+
+
+
+```{r filtering Combined DEGs for CSP genes}
+
+#read in the DEGs for combined only 
+DEGs <- read.csv("~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Combined_DEG_comaprisons.csv")
+
+DEGs <- DEGs[, -1]
+
+
+#filter for the specific CSP genes in the DEGs
+CSPrelated_DEGs <- DEGs %>%
+  filter(genes %in% CSP_genes_clean$gene_id)
+
+CSPrelated_DEGs <- CSPrelated_DEGs %>%
+  left_join(CSP_genes_clean %>% 
+  dplyr::select(gene_id, Gene.name), by = c("genes" = "gene_id"))
+
+
+write.csv(CSPrelated_DEGs, "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/CSPrelated_DEGs_wshortname.csv" )
+
+#looking at all just split in half
+
+Dot_plot_combinedDEGs_all<- CSPrelated_DEGs %>%
+   filter(comparison %in% c("HnvsLn","RhizvsLn"))
+
+Dot_plot_combinedDEGs_all <- Dot_plot_combinedDEGs_all %>%
+  dplyr::rename(gene_name = Gene.name)
+
+
+
+CSP_combinedDEGs_all <- ggplot(Dot_plot_combinedDEGs_all, aes(x = gene_name, y = comparison, fill = logFC, tooltip = paste0(genes))) +
+  geom_tile_interactive() +
+  facet_grid(~ gene_name, scales = "free", space = "free_x", switch = "both") +
+  theme_classic() +
+  theme(panel.spacing = unit(0, "lines"),
+        strip.background = element_blank(),
+        axis.line = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "grey"),
+        strip.placement = "outside",
+        axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, margin = margin(t = 10)),
+        axis.text.x = element_blank(),
+        strip.background.x = element_rect(color = "black", size = 0.3, linetype = "solid"),
+        strip.text = element_text(angle = 90, hjust = 0.5), 
+        panel.background = element_rect(fill = 'white', colour = 'white'), 
+        legend.position = "bottom") +
+  scale_y_discrete(drop = TRUE, labels = c("HnvsLn","RhizvsLn")) + 
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_gradient(low = "blue", high = "#FF4040", name = "logFC") + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("CSP genes present in DEGs")
+
+CSP_combinedDEGs_all
+
+girafe(ggobj = CSP_combinedDEGs_all, width_svg = 8, height_svg = 5, options = list(opts_sizing(rescale = T), opts_zoom(min = 1, max = 3)))
+
+
+
+CSP_combinedDEGs_all <- ggplot(Dot_plot_combinedDEGs_all, aes(x = gene_name, y = comparison, fill = logFC, tooltip = paste0(genes))) +
+  geom_tile_interactive() +
+  facet_grid(~ gene_name, scales = "free", space = "free_x", switch = "both") +
+  theme_classic() +
+  theme(
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank(),
+    axis.line = element_line(colour = "grey"),
+    panel.grid.major.x = element_line(colour = "grey"),
+    strip.placement = "outside",
+    axis.text.y = element_text(angle = 0, hjust = 1, vjust = 0.5, margin = margin(t = 10)),
+    axis.text.x = element_blank(),
+    strip.background.x = element_rect(color = "black", size = 0.3, linetype = "solid"),
+    strip.text = element_text(angle = 90, hjust = 0.5),
+    panel.background = element_rect(fill = 'white', colour = 'white'),
+    legend.position = "bottom"
+  ) +
+  scale_y_discrete(drop = TRUE, labels = c("HnvsLn", "RhizvsLn")) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "logFC") +
+  ylab("") +
+  xlab("")
+
+CSP_combinedDEGs_all
+
+girafe(ggobj = CSP_combinedDEGs_all, width_svg = 8, height_svg = 5, options = list(opts_sizing(rescale = T), opts_zoom(min = 1, max = 3)))
+
+
+ggsave(
+  filename = "~/dutley@ncsu.edu - Google Drive/Shared drives/Sederoff Lab/Lotus & Friends/revision analysis/linear/Symbiosis_DEGs_all.png",
+  plot = CSP_combinedDEGs_all,
+  device = "png",
+  width = 8.5,  # Half of a landscape page width
+  height = 5.5, # Maintain aspect ratio
+  units = "in",
+  dpi = 400,
+  limitsize = TRUE
+)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
